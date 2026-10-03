@@ -1,0 +1,28 @@
+{
+  "ModId": "p3rpc.coop",
+  "ModName": "P3R Co-op",
+  "ModAuthor": "mbasd + Claude",
+  "ModVersion": "0.0.1",
+  "ModDescription": "Two-player Tartarus co-op (Block Tales style). Work in progress: RNG recon build.",
+  "ModDll": "p3rpc.coop.dll",
+  "ModIcon": "",
+  "ModR2RManagedDll32": "",
+  "ModR2RManagedDll64": "",
+  "ModNativeDll32": "",
+  "ModNativeDll64": "",
+  "Tags": [],
+  "CanUnload": false,
+  "HasExports": false,
+  "IsLibrary": false,
+  "ReleaseMetadataFileName": "",
+  "PluginData": {},
+  "IsUniversalMod": false,
+  "ModDependencies": [
+    "reloaded.sharedlib.hooks"
+  ],
+  "OptionalDependencies": [],
+  "SupportedAppId": [
+    "p3r.exe"
+  ],
+  "ProjectUrl": ""
+}

@@ -1,0 +1,8 @@
+# game-derived data and downloads never go in the repo
+research/
+downloads/
+recon/
+# build output
+bin/
+obj/
+*.user

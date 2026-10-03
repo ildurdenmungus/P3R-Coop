@@ -1,0 +1,25 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
+    <CopyLocalLockFileAssemblies>true</CopyLocalLockFileAssemblies>
+    <LangVersion>latest</LangVersion>
+    <Nullable>enable</Nullable>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <OutputPath>C:\Users\mbasd\Reloaded-II\Mods\p3rpc.coop</OutputPath>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Content Include="ModConfig.json">
+      <CopyToOutputDirectory>Always</CopyToOutputDirectory>
+    </Content>
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Reloaded.Mod.Interfaces" Version="2.3.0" ExcludeAssets="runtime" />
+    <PackageReference Include="Reloaded.SharedLib.Hooks" Version="1.9.0" />
+  </ItemGroup>
+
+</Project>
