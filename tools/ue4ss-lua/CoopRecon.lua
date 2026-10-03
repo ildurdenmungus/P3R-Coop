@@ -1,4 +1,4 @@
--- CoopRecon: recon for the P3R co-op mod. Output goes to C:/Users/mbasd/P3R-Coop/recon/
+﻿-- CoopRecon: recon for the P3R co-op mod. Output goes to C:/Users/mbasd/P3R-Coop/recon/
 -- F6 = class census + floor fingerprint
 -- Automatic: dungeon state-machine steps -> floor_events.log; fingerprint after every floor build.
 
@@ -106,7 +106,13 @@ hook("/Script/xrd777.FldDungeonControlActor:SetField", function(self, major, min
     return string.format("(%d, %d, %d)", major:get(), minor:get(), idx:get())
 end)
 hook("/Script/xrd777.FldDungeonControlActor:SetNextFieldFloor")
-hook("/Script/xrd777.FldDungeonEnemyController:AutoFloorCreateActor")
+-- AutoFloorCreateActor fires once per random floor (verified 2026-10-04); fingerprint after spawning settles.
+pcall(function()
+    RegisterHook("/Script/xrd777.FldDungeonEnemyController:AutoFloorCreateActor", function()
+        append("floor_events.log", now() .. "  AutoFloorCreateActor")
+        ExecuteWithDelay(2000, function() ExecuteInGameThread(function() fingerprint("AutoFloorCreateActor") end) end)
+    end)
+end)
 
 -- CREATE_END = layout finished: fingerprint shortly after (let the part actors finish spawning).
 pcall(function()
@@ -116,5 +122,91 @@ pcall(function()
     end)
 end)
 
+-- Polling fingerprint: the floor's part actors are streamed in over several frames and not every floor goes
+-- through a hookable UFunction, so every 2 s hash the current parts and record when the set settles on a new value.
+local last_hash, pending_hash = nil, nil
+local function floor_hash()
+    local parts = FindAllOf("FldDungeonPartActor")
+    if not parts or #parts == 0 then return nil, 0 end
+    local rows = {}
+    for _, p in ipairs(parts) do
+        local ok, row = pcall(function()
+            local loc = p:K2_GetActorLocation()
+            return string.format("%.0f,%.0f,%d,%d,%d", loc.X, loc.Y, p.PartType, p.PartVariation, p.PartDirType)
+        end)
+        if ok then rows[#rows + 1] = row end
+    end
+    table.sort(rows)
+    local h = 5381
+    for _, r in ipairs(rows) do for i = 1, #r do h = (h * 33 + string.byte(r, i)) % 4294967296 end end
+    return h, #rows
+end
+
+LoopAsync(2000, function()
+    ExecuteInGameThread(function()
+        local ok, h, n = pcall(floor_hash)
+        if not ok or not h then pending_hash = nil; return end
+        if h ~= last_hash and h == pending_hash then
+            last_hash = h
+            fingerprint(string.format("poll n=%d", n))
+        end
+        pending_hash = h
+    end)
+    return false
+end)
+-- File-drop command bridge (dev only): write one command per line to recon/cmd.txt; results go to bridge.log.
+--   where | next | prev | setfield <major> <minor> <idx> | fp | census | eval <lua chunk>
+local CMD = OUT .. "cmd.txt"
+local function bridge_log(s) append("bridge.log", now() .. "  " .. s) end
+
+local function control_actor()
+    local a = FindFirstOf("FldDungeonControlActor")
+    if a and a:IsValid() then return a end
+    return nil
+end
+
+local commands = {}
+commands.where = function()
+    local a = control_actor()
+    local h, n = floor_hash()
+    return string.format("control=%s parts=%s hash=%s world=%s", a and a:GetFullName() or "none",
+        tostring(n), h and string.format("%08x", h) or "-", world_name())
+end
+commands.next = function() local a = control_actor(); if not a then return "no FldDungeonControlActor" end; a:DebugSetNextFieldFloor(); return "DebugSetNextFieldFloor called" end
+commands.prev = function() local a = control_actor(); if not a then return "no FldDungeonControlActor" end; a:DebugSetPrevFieldFloor(); return "DebugSetPrevFieldFloor called" end
+commands.setfield = function(args)
+    local a = control_actor(); if not a then return "no FldDungeonControlActor" end
+    local M, m, i = args:match("(%-?%d+)%s+(%-?%d+)%s+(%-?%d+)")
+    a:SetField(tonumber(M), tonumber(m), tonumber(i)); return "SetField(" .. M .. "," .. m .. "," .. i .. ")"
+end
+commands.fp = function() fingerprint("bridge"); return "fingerprint written" end
+commands.census = function() census(); return "census written" end
+commands.eval = function(args)
+    local fn, err = load(args)
+    if not fn then return "compile error: " .. tostring(err) end
+    local ok, res = pcall(fn)
+    return (ok and "ok " or "error ") .. tostring(res)
+end
+
+LoopAsync(500, function()
+    local f = io.open(CMD, "r")
+    if not f then return false end
+    local text = f:read("*a"); f:close()
+    if not text or text:match("^%s*$") then return false end
+    local w = io.open(CMD, "w"); if w then w:close() end
+    for line in text:gmatch("[^\r\n]+") do
+        local name, args = line:match("^%s*(%S+)%s*(.*)$")
+        local cmd = name and commands[name]
+        if cmd then
+            ExecuteInGameThread(function()
+                local ok, res = pcall(cmd, args)
+                bridge_log(line .. " -> " .. (ok and tostring(res) or ("ERROR " .. tostring(res))))
+            end)
+        else
+            bridge_log(line .. " -> unknown command")
+        end
+    end
+    return false
+end)
 append("floor_events.log", now() .. "  CoopRecon loaded")
 print("[CoopRecon] loaded\n")

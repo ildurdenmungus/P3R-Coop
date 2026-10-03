@@ -26,6 +26,11 @@ Real two-game co-op, Block Tales style. Both players own P3R and run it with the
 - **Battles (Block Tales join):** a duo touches a shadow → battle on that player's game with their duo; the
   other player gets a "Join battle" prompt; if they join, both games run the battle with all 4 members and
   each player commands their own duo's turns.
+- **Boss fights wait for both players (user request 2026-10-04):** a boss/gatekeeper battle (floor guardians,
+  full-moon bosses, `AFldBossBattleScript`, `AFldDungeonLayoutDirectEnemyActor.GateKeeper`) never starts with
+  one duo. Touching the boss (or its door/event) shows "Waiting for <player>…" and freezes the encounter
+  until the other duo arrives nearby and confirms; then both games start the same battle with all 4 members.
+  (Block Tales does the same: everyone must be near the boss.)
 - **State authority:** the host's game owns the save. The guest sends Duo B results (HP/SP/EXP/items picked
   up) back to the host after each battle or pickup.
 
@@ -79,6 +84,31 @@ Launch: `Reloaded-II.exe --launch "D:\...\P3R.exe"`. Only one P3R at a time (a 2
   the remote player is choosing.
 - `UBtlOrder`: InterruptList, StandbyList (turn order).
 
+### Floor-sync spike (M2) — 2026-10-04
+- **RNG probe** (`src/p3rpc.coop/RngProbe.cs`): P3R.exe IAT slots for `api-ms-win-crt-utility!rand/srand`
+  (P3R.exe+0x4044B88 / +0x4044B90) → hand-assembled stubs that log (return addr, tid[, seed]) into ring buffers.
+  An inline asm hook on ucrtbase!rand crashed the game (prologue = `sub rsp,28h; call rel32`; relocation broke).
+  FASM gotcha: `[gs:0x48]` assembled wrong → use `xor ecx,ecx; mov rcx,[gs:rcx+48h]`.
+- UCRT rand state is **per thread**; worker threads hammer rand via P3R.exe+0xCA4E68 (~7000/s while loading),
+  game-thread steady callers +0x1354156, +0x36451F5, +0x14329DE, +0x1163466. srand only at startup
+  (P3R.exe+0x8A6A55 on the game thread, time seed; +0x3A80B78 on another thread).
+- P3R.exe+0x13DB8xx (403-iteration loop, rand→float→sin/cos→TArray<float>) runs on floor load but is a visual
+  scatter, NOT the layout.
+- `tools/find_natives.py` maps UFunction names → exec thunks via the FNameNativePtrPair tables. Native bodies:
+  CREATE_LAYOUT +0x11A65D0, CREATE_END +0x11A62C0, FloorInit +0x11ACDE0, (DungeonInit?) +0x11AADE0.
+- **CREATE_LAYOUT is a poll loop**: for idx in m_ControlComponent[0..0x18) (TArray at +0x2E0, idx at +0x51C)
+  call vtable+0x448 (or +0x450 when byte +0x520 set) until component byte +0x139 is set; then state(+0x518)=9.
+  Measured: ~0 game-thread rand per tick. The layout RNG is elsewhere (other state, a component virtual, an
+  own RNG, or a worker thread) — still unknown.
+- Floor fingerprint (Lua, polling every 2 s over FldDungeonPartActor): first floor `8db2cf7d` = 7 parts on a
+  3200-unit grid (types 1,3,4,4,6,6,11).
+- AutoFloorCreateActor (UFunction) fires for stairs floors; teleport arrivals did not fire it.
+- **Command bridge** (CoopRecon Lua): write commands to `recon/cmd.txt`, results in `recon/bridge.log`
+  (where | next | prev | setfield M m i | fp | census | eval <lua>). Needs the game to run unfocused →
+  p3rpc.essentials `User\Mods\p3rpc.essentials\Config.json` = `{"RenderInBackground": true}`.
+  **Gotcha:** essentials `IntroSkip` is an enum — writing `true` crashed the game twice (CLR fatal 0x80131506
+  on live reload, startup JSON exception on launch).
+
 ## (old) Design v1: host-authoritative, controller-routed
 Running two separate copies of P3R in sync (Tartarus floor gen, battle RNG, events) is out of scope.
 Instead **one game runs on the host**, and the mod decides **which controller is allowed to drive the game**
@@ -127,7 +157,9 @@ Hook pattern: `IStartupScanner.AddMainModuleScan(sig)` → `IReloadedHooks.Creat
 - Saves: `C:\Users\mbasd\.universal-modder\backups\p3r-saves\20261004-015136.zip` (16 files, 11.9 MB) of
   `%APPDATA%\SEGA\P3R\Steam` → `um backup restore p3r-saves`
 - Config: `...\backups\p3r-config\20261004-015137.zip` of `%LOCALAPPDATA%\P3R\Saved\Config`
-- Reloaded-II does not touch the game folder; uninstalling = delete the Reloaded-II folder.
+- Files that appeared in the game folder `P3R\Binaries\Win64\` (delete to clean up): `steam_appid.txt`
+  (Reloaded SteamHook, needed for --launch), `imgui.ini` (UE4SS GUI). The Ctrl+J object dump also lands
+  there (`UE4SS_ObjectDump.txt`, 36 MB) — moved to `research\`. Otherwise uninstall = delete Reloaded-II folder.
 
 ## Log
 - 2026-10-04: recon done, design chosen, waiting on OK to install Reloaded-II + back up saves.
