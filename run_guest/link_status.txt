@@ -1,1 +1,0 @@
-received command: 1 24 P2 1 0 E0
