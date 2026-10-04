@@ -17,6 +17,13 @@ public class Config
     /// <summary>Research only: log callers of the xorshift128 helper P3R.exe+0x11AC2B0. Off by default.</summary>
     public bool XorProbe { get; set; }
 
+    /// <summary>Shared battle rolls (BattleRng): per-call-site streams for battle code while armed. On by default
+    /// (does nothing until armed by co-op or by BattleRngTestSeed).</summary>
+    public bool BattleRng { get; set; } = true;
+
+    /// <summary>One-PC test: non-zero = arm BattleRng with this seed at every battle.</summary>
+    public uint BattleRngTestSeed { get; set; }
+
     /// <summary>Native battle command capture/override (BattleHooks). On by default.</summary>
     public bool BattleHooks { get; set; } = true;
 

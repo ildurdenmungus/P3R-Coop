@@ -31,6 +31,7 @@ public unsafe class BattleHooks
 {
     private const long RvaSetCommand = 0x10407F0;   // via exec thunk P3R.exe+0x15E63E0
     private const long RvaDoCommand = 0x102FCE0;    // via exec thunk P3R.exe+0x15E4A00
+    private const long RvaFloorInit = 0x11ACDE0;    // AFldDungeonGameInit::FloorInit: game thread, runs before any Tartarus battle
     private const long RvaResizeForCopy = 0x950CF0;        // TArray<T*>::ResizeForCopy(this, NewMax, PrevMax) -> FMemory::Realloc
     private const long RvaSetCommandTargets = 0x1040820;   // via exec thunk P3R.exe+0x15E64F0 (TArray* = copy source)
 
@@ -49,6 +50,9 @@ public unsafe class BattleHooks
     [Function(CallingConventions.Microsoft)]
     public delegate void DoCommandFn(nint am);
 
+    [Function(CallingConventions.Microsoft)]
+    public delegate void FloorInitFn(nint self);
+
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
     private delegate void SetCommandTargetsNative(nint am, nint targetsArray);
 
@@ -61,6 +65,7 @@ public unsafe class BattleHooks
     private readonly string _dir;
     private readonly IHook<SetCommandFn> _setCommand;
     private readonly IHook<DoCommandFn> _doCommand;
+    private readonly IHook<FloorInitFn> _floorInit;
     private readonly SetCommandTargetsNative _setCommandTargets;
     private readonly ResizeForCopyNative _resizeForCopy;
 
@@ -73,20 +78,32 @@ public unsafe class BattleHooks
     private nint _lastRemoteActor;                    // duplicate guard: actor + time of the last remote run
     private long _lastRemoteTicks;
 
-    public BattleHooks(IReloadedHooks hooks, CoopLog log, string runDir)
+    private readonly uint _testSeed;
+
+    public BattleHooks(IReloadedHooks hooks, CoopLog log, string runDir, uint battleRngTestSeed = 0)
     {
         _log = log;
         _dir = runDir;
+        _testSeed = battleRngTestSeed;
+        if (_testSeed != 0) BattleRng.Arm(_testSeed);   // one-PC test: every battle uses this seed
         Directory.CreateDirectory(runDir);
-        Delete("kick.txt"); Delete("cmd_request.txt"); Delete("remote_cmds.txt"); Delete("local_cmds.txt");   // stale commands from an earlier session would be replayed
+        Delete("kick.txt"); Delete("battle_end.txt"); Delete("cmd_request.txt"); Delete("remote_cmds.txt"); Delete("local_cmds.txt");   // stale commands from an earlier session would be replayed
 
         var exe = (long)Process.GetCurrentProcess().MainModule!.BaseAddress;
         _setCommand = hooks.CreateHook<SetCommandFn>(SetCommandImpl, exe + RvaSetCommand).Activate();
         _doCommand = hooks.CreateHook<DoCommandFn>(DoCommandImpl, exe + RvaDoCommand).Activate();
+        _floorInit = hooks.CreateHook<FloorInitFn>(FloorInitImpl, exe + RvaFloorInit).Activate();
         _setCommandTargets = Marshal.GetDelegateForFunctionPointer<SetCommandTargetsNative>((nint)(exe + RvaSetCommandTargets));
         _resizeForCopy = Marshal.GetDelegateForFunctionPointer<ResizeForCopyNative>((nint)(exe + RvaResizeForCopy));
         new Thread(WatchRemote) { IsBackground = true, Name = "coop-battle-remote" }.Start();
         log.Info("Battle hooks on (SetCommand, DoCommand, remote relay)");
+    }
+
+    // Tell BattleRng which thread is the game thread before the first battle on this floor rolls anything.
+    private void FloorInitImpl(nint self)
+    {
+        try { BattleRng.SetGameThread(GetCurrentThreadId()); } catch { }
+        _floorInit.OriginalFunction(self);
     }
 
     private void SetCommandImpl(nint am, nint commander, byte type, int id)
@@ -110,7 +127,11 @@ public unsafe class BattleHooks
         var commander = *(nint*)(am + AmCommander);
         if (commander == 0) return true;
         var core = *(nint*)(commander + ActorCore);
-        if (core != _core) { _core = core; _battle++; _turn = 0; _waiting = null; _received.Clear(); }
+        if (core != _core)
+        {
+            _core = core; _battle++; _turn = 0; _waiting = null; _received.Clear();
+            BattleRng.SetGameThread(GetCurrentThreadId());
+        }
         var slot = Slot(commander);
 
         // A second DoCommand for the unit whose remote command just ran is a duplicate (a late kick): drop it.
@@ -164,6 +185,14 @@ public unsafe class BattleHooks
             Thread.Sleep(50);
             try
             {
+                // The Lua script reports the end of every battle: summarise the shared rolls and re-arm for the next.
+                var end = Path.Combine(_dir, "battle_end.txt");
+                if (File.Exists(end))
+                {
+                    File.Delete(end);
+                    BattleRng.Disarm();
+                    if (_testSeed != 0) BattleRng.Arm(_testSeed);
+                }
                 if (!File.Exists(path)) continue;
                 using var fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
                 if (fs.Length < _remoteReadPos) _remoteReadPos = 0;   // file was reset
@@ -303,6 +332,8 @@ public unsafe class BattleHooks
         for (int i = 0; i < num; i++) parts[i] = data[i] == 0 ? "nil" : Slot(data[i]);
         return string.Join(",", parts);
     }
+
+    [DllImport("kernel32")] private static extern uint GetCurrentThreadId();
 
     private void Write(string file, string text) { try { File.WriteAllText(Path.Combine(_dir, file), text); } catch { } }
     private void Append(string file, string line) { try { File.AppendAllText(Path.Combine(_dir, file), line + Environment.NewLine); } catch { } }

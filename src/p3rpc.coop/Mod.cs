@@ -20,6 +20,7 @@ public class Mod
         if (config.RngProbe) _rng = new RngProbe(log);
         if (config.DungeonProbe && _rng != null) _dungeon = new DungeonProbe(hooks, log, _rng, config.ForceSeed);
         if (config.XorProbe) _xor = new XorProbe(hooks, log);
-        if (config.BattleHooks) _battle = new BattleHooks(hooks, log, config.RunDir);
+        if (config.BattleRng) BattleRng.Install(log);   // after RngProbe: chains to its stub if both are on
+        if (config.BattleHooks) _battle = new BattleHooks(hooks, log, config.RunDir, config.BattleRngTestSeed);
     }
 }

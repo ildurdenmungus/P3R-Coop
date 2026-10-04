@@ -63,7 +63,10 @@ end
 
 local function poll()
     if not valid(core) then
-        if last_turn then log("battle over / no core"); last_turn, last_ai, last_am = nil, nil, nil end
+        if last_turn then
+            log("battle over / no core"); last_turn, last_ai, last_am = nil, nil, nil
+            local f = io.open(RUN .. "battle_end.txt", "w"); if f then f:write(os.date("%H:%M:%S")); f:close() end
+        end
         -- FindFirstOf scans every UObject: outside battles only look again every 2 s
         if os.clock() < next_search then return end
         next_search = os.clock() + 2

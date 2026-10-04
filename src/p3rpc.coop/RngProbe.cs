@@ -30,8 +30,8 @@ public unsafe class RngProbe
         _log = log;
         var exe = (byte*)Process.GetCurrentProcess().MainModule!.BaseAddress;
 
-        var randSlot = FindImportSlot(exe, CrtUtility, "rand");
-        var srandSlot = FindImportSlot(exe, CrtUtility, "srand");
+        var randSlot = ImportSlots.Find(exe, CrtUtility, "rand");
+        var srandSlot = ImportSlots.Find(exe, CrtUtility, "srand");
         if (randSlot == null || srandSlot == null)
         {
             log.Error($"IAT slots not found (rand={(nint)randSlot:X}, srand={(nint)srandSlot:X}); RNG probe off");
@@ -44,10 +44,10 @@ public unsafe class RngProbe
         _srandIdx = (int*)NativeMemory.AllocZeroed(64);
 
         RealSrand = *srandSlot;
-        var randStub = Emit(RandStub(*randSlot));
-        var srandStub = Emit(SrandStub(*srandSlot, forceSeed: 0));   // seeding is targeted (DungeonProbe), not global
-        Patch(randSlot, randStub);
-        Patch(srandSlot, srandStub);
+        var randStub = ImportSlots.Emit(RandStub(*randSlot));
+        var srandStub = ImportSlots.Emit(SrandStub(*srandSlot, forceSeed: 0));   // seeding is targeted (DungeonProbe), not global
+        ImportSlots.Patch(randSlot, randStub);
+        ImportSlots.Patch(srandSlot, srandStub);
 
         log.Info($"RNG probe on (IAT): rand slot P3R.exe+0x{(ulong)randSlot - (ulong)exe:X}, " +
                  $"srand slot P3R.exe+0x{(ulong)srandSlot - (ulong)exe:X}");
@@ -102,43 +102,6 @@ public unsafe class RngProbe
     {
         b.AddRange(new byte[] { 0xFF, 0x25, 0, 0, 0, 0 });                                            // jmp [rip+0]
         b.AddRange(BitConverter.GetBytes((ulong)target));
-    }
-
-    private static nint Emit(byte[] code)
-    {
-        var mem = VirtualAlloc(0, (nuint)code.Length, 0x3000 /*COMMIT|RESERVE*/, 0x40 /*RWX*/);
-        Marshal.Copy(code, 0, mem, code.Length);
-        return mem;
-    }
-
-    private static void Patch(nint* slot, nint value)
-    {
-        VirtualProtect((nint)slot, 8, 0x04 /*RW*/, out var old);
-        *slot = value;
-        VirtualProtect((nint)slot, 8, old, out _);
-    }
-
-    /// <summary>Walks the in-memory import directory of a module and returns the IAT slot for dll!func.</summary>
-    private static nint* FindImportSlot(byte* module, string dll, string func)
-    {
-        var nt = module + *(int*)(module + 0x3C);
-        var importRva = *(uint*)(nt + 0x18 + 0x78);          // OptionalHeader64.DataDirectory[1].VirtualAddress
-        if (importRva == 0) return null;
-        for (var desc = module + importRva; *(uint*)(desc + 12) != 0; desc += 20)
-        {
-            var name = Marshal.PtrToStringAnsi((nint)(module + *(uint*)(desc + 12)));
-            if (!string.Equals(name, dll, StringComparison.OrdinalIgnoreCase)) continue;
-            var lookup = *(uint*)desc != 0 ? *(uint*)desc : *(uint*)(desc + 16);
-            var thunks = (ulong*)(module + lookup);
-            var slots = (nint*)(module + *(uint*)(desc + 16));
-            for (int i = 0; thunks[i] != 0; i++)
-            {
-                if ((thunks[i] & 0x8000000000000000UL) != 0) continue;   // by ordinal
-                var fn = Marshal.PtrToStringAnsi((nint)(module + (uint)thunks[i] + 2));
-                if (fn == func) return &slots[i];
-            }
-        }
-        return null;
     }
 
     public bool Active => _randIdx != null;
@@ -230,6 +193,4 @@ public unsafe class RngProbe
         return $"0x{addr:X}";
     }
 
-    [DllImport("kernel32")] private static extern nint VirtualAlloc(nint addr, nuint size, uint type, uint protect);
-    [DllImport("kernel32")] private static extern bool VirtualProtect(nint addr, nuint size, uint protect, out uint old);
 }

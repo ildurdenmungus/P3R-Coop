@@ -176,6 +176,22 @@ Launch: `Reloaded-II.exe --launch "D:\...\P3R.exe"`. Only one P3R at a time (a 2
 - Title flow (keys): content warning (auto) → network prompt C → "network disabled" OK Space → intro Enter →
   press any button Enter → title "Load" Enter → slot 7 Space → confirm Space.
 
+### Shared battle rolls WORK (2026-10-04 16:25) — `BattleRng.cs`
+- rand IAT slot → stub: if armed && TEB thread id == game thread → managed `Next(ret, [rsp+30h])`; battle-range
+  call sites (RVA 0xF80000-0x1080000, 0x11E0000-0x1200000) get a private MSVC-LCG stream per site seeded from
+  one shared seed; RandRange helper (+0x11AC276) keyed by its caller. Lazy arm: Arm(seed) → first battle-site
+  call resets all streams. Game thread taken from the FloorInit hook (Reloaded's init thread is NOT the game
+  thread: 12144 vs 4448). Lua writes run/battle_end.txt at battle end → Disarm (logs per-site counts) → re-arm.
+- Test (tools/run_battle.sh = launch, slot 7, Tartarus 214, first Normal Shadow, Space-Space each 5 s; compare
+  with tools/compare_runs.py): runs A and B (seed 12345, fresh game each) on encounter 933 (Em0122+Em0129,
+  preemptive 1) → **16 commands identical turn by turn** incl. enemy choices/targets; 18/20 sites same roll
+  count (+0xFFBB62 435/439 and +0xFE5CFA 15/10 differ: frame-driven, isolated per site). Control run C
+  (unarmed) diverged at command 3 (A/B: E1 gets a second action = crit/One More roll; C: Ken acts) and took 18
+  commands. → per-site streams make battle outcomes reproducible across game instances.
+- Test-driving gotchas: um win drive only types into the foreground window (tools/focus.ps1 before every key);
+  the load dialog can appear late (press Space twice); FindAllOf order is not stable across launches (but the
+  first Normal Shadow on 214 still gave encounter 933 every time); our SendInput resets the Windows idle timer.
+
 ### Status at pause (2026-10-04 ~12:50)
 - **Crash on remote turns** (coreclr AV at +0x2e4ff2, 3x): first fixed a double kick (watcher rewrote kick.txt
   before the turn cleared → Ken acted twice). Still crashed on the first remote turn → suspect: in-place TArray
