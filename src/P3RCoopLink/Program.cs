@@ -89,16 +89,18 @@ async Task Bot()
     Status("bot mode: answering remote battle turns with 'attack E0' after 1.5 s");
     var req = Path.Combine(dir, "cmd_request.txt");
     var outPath = Path.Combine(dir, "remote_cmds.txt");
+    // Key = content + write time: the game's battle/turn counters restart every launch, so the same "b n slot"
+    // text comes back in a new session and must be answered again.
     string? answered = null;
     while (true)
     {
         await Task.Delay(100);
         string? line = null;
-        try { if (File.Exists(req)) line = File.ReadAllText(req).Trim(); } catch { }
+        try { if (File.Exists(req)) line = File.ReadAllText(req).Trim() + "@" + File.GetLastWriteTimeUtc(req).Ticks; } catch { }
         if (string.IsNullOrEmpty(line) || line == answered) continue;
         answered = line;
         await Task.Delay(1500);
-        var cmd = $"{line} 1 0 E0";      // "b n slot" + type 1 (attack), id 0, target enemy 0
+        var cmd = $"{line.Split('@')[0]} 1 0 E0";      // "b n slot" + type 1 (attack), id 0, target enemy 0
         File.AppendAllText(outPath, cmd + Environment.NewLine);
         Status($"answered: {cmd}");
     }

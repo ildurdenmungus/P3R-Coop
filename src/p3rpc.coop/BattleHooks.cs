@@ -31,6 +31,7 @@ public unsafe class BattleHooks
 {
     private const long RvaSetCommand = 0x10407F0;   // via exec thunk P3R.exe+0x15E63E0
     private const long RvaDoCommand = 0x102FCE0;    // via exec thunk P3R.exe+0x15E4A00
+    private const long RvaResizeForCopy = 0x950CF0;        // TArray<T*>::ResizeForCopy(this, NewMax, PrevMax) -> FMemory::Realloc
     private const long RvaSetCommandTargets = 0x1040820;   // via exec thunk P3R.exe+0x15E64F0 (TArray* = copy source)
 
     // UBtlActionManagerComponent
@@ -51,6 +52,9 @@ public unsafe class BattleHooks
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
     private delegate void SetCommandTargetsNative(nint am, nint targetsArray);
 
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    private delegate void ResizeForCopyNative(nint array, int newMax, int prevMax);
+
     private record Command(int Battle, int Turn, string Slot, byte Type, int Id, string[] Targets);
 
     private readonly CoopLog _log;
@@ -58,6 +62,7 @@ public unsafe class BattleHooks
     private readonly IHook<SetCommandFn> _setCommand;
     private readonly IHook<DoCommandFn> _doCommand;
     private readonly SetCommandTargetsNative _setCommandTargets;
+    private readonly ResizeForCopyNative _resizeForCopy;
 
     private nint _core;                 // BtlCoreComponent of the current battle
     private int _battle, _turn;
@@ -79,6 +84,7 @@ public unsafe class BattleHooks
         _setCommand = hooks.CreateHook<SetCommandFn>(SetCommandImpl, exe + RvaSetCommand).Activate();
         _doCommand = hooks.CreateHook<DoCommandFn>(DoCommandImpl, exe + RvaDoCommand).Activate();
         _setCommandTargets = Marshal.GetDelegateForFunctionPointer<SetCommandTargetsNative>((nint)(exe + RvaSetCommandTargets));
+        _resizeForCopy = Marshal.GetDelegateForFunctionPointer<ResizeForCopyNative>((nint)(exe + RvaResizeForCopy));
         new Thread(WatchRemote) { IsBackground = true, Name = "coop-battle-remote" }.Start();
         log.Info("Battle hooks on (SetCommand, DoCommand, remote relay)");
     }
@@ -207,17 +213,20 @@ public unsafe class BattleHooks
 
         _setCommand.OriginalFunction(am, commander, type, id);
 
+        // The TArray parameter is by value: SetCommandTargets copies it and then FREES its data with the game's
+        // allocator (MSVC: callee destroys by-value args). So the data must come from the game's allocator:
+        // ResizeForCopy (P3R.exe+0x950CF0, what the exec thunk uses) allocates it; we only own the 16-byte header.
         var tmp = (nint*)NativeMemory.AllocZeroed(16);
-        var buf = (nint*)NativeMemory.AllocZeroed((nuint)Math.Max(1, targets.Count) * 8);
         try
         {
-            for (int i = 0; i < targets.Count; i++) buf[i] = targets[i];
-            tmp[0] = (nint)buf;
-            ((int*)tmp)[2] = targets.Count;   // ArrayNum
-            ((int*)tmp)[3] = targets.Count;   // ArrayMax
-            _setCommandTargets(am, (nint)tmp);
+            ((int*)tmp)[2] = targets.Count;                       // ArrayNum
+            if (targets.Count > 0) _resizeForCopy((nint)tmp, targets.Count, 0);
+            var data = (nint*)tmp[0];
+            if (targets.Count > 0 && data == null) { _log.Error("ResizeForCopy returned no buffer"); return; }
+            for (int i = 0; i < targets.Count; i++) data[i] = targets[i];
+            _setCommandTargets(am, (nint)tmp);                    // copies, then frees tmp->data
         }
-        finally { NativeMemory.Free(buf); NativeMemory.Free(tmp); }
+        finally { NativeMemory.Free(tmp); }
 
         // Mirror into the unit's AI decision fields (read by UI/logic); targets there only shrink in place.
         var ai = *(nint*)(commander + ActorAI);
