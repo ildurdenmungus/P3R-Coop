@@ -230,6 +230,50 @@ Launch: `Reloaded-II.exe --launch "D:\...\P3R.exe"`. Only one P3R at a time (a 2
 - Theurgia (T) opens the menu but is locked until the gauge fills; remote Theurgia (command type 11) IDs still
   uncaptured.
 
+### Joint battle start (2026-10-05) — `Session.cs`, `EncounterSync.cs`, `PartySync.cs`
+- **Design choice:** every battle is joint (the partner's game auto-joins), so both games keep the same state
+  (EXP, HP, Shadows). If the partner can't join (menu for 20 s, own battle, no Shadow on its floor) the battle is
+  "solo" and the starter commands all four.
+- Field encounter request: `FieldManager::RequestEncount` +0x11DB770 (this, FFldEnemyHolder{Actor, EnemyComp}*,
+  int reason) stores the request at +0x290 (reason +0x2A0) if none is pending; field manager = +0x115A590()
+  (game instance +0x100, else global +0x566E958); field playable = state +0x280 in {2,3} (+0x11D9920).
+  Reasons: 2..4 player strikes (ebx+2), 5 = forced/enemy contact.
+- `AFldEnemyManager::ForceEncount` native +0x1130090: first Enemies[i] (+0x278) whose resolved object
+  (+0x115A210) vfunc+0x4B8 is false -> RequestEncount(reason 5). `AFldDungeonGame::ForceEncount` = empty stub.
+- UFldEnemyComp: type +0x118 (EFldEnemyType: 0 Normal, 1 Strong, 2 Rare, 3 Death, 4 Gatekeeper), id +0x11C,
+  EncountID +0x120 = **0 for Tartarus Shadows** (encounter picked later).
+- FBtlEncountParam reaches the battle through UBtlCoreComponent::LoadResidentData +0x1036B50 / LoadData
+  +0x1035910 / LoadEnemyData +0x10368D0 (each copies it to core+0x298). SetEncountParam (+0x10408F0) is BP-only
+  and NOT called for Tartarus battles.
+- Protocol (net_out/net_in via link "M" lines): `BATTLE id seed reason enemyId encount`, `PARAM id hex(0x24)`,
+  `JOINED id`, `BUSY id`, `HPSP id hp sp ...`. Battle ids: host even, guest odd; local battles negative.
+  peer.txt "<role> <0|1>" heartbeat from the link (older than 3 s = alone).
+- **Test A (host, `bot host`): WORKS** — encounter 933, BATTLE 2 -> JOINED, P2/P3 held 5x -> answered ->
+  released, 19 commands, 0 errors, battle won.
+- BtlCoreComponent may be reused between battles -> BattleHooks now resets its core at battle end.
+- UGlobalWork getter +0x122AC90 (nativetypes sig): units +0x1B0 (0x2B4 each, Hp +0xC, Sp +0x10, persona equip
+  +0x48), ActiveCharacters +0x1F6C. PartySync sends own duo HP/SP every second outside battles.
+- `tools/dis.sh <va> [len]` = dumpbin disassembly (MSYS_NO_PATHCONV for its -flags).
+- Field battle start (AFldDungeonGame ~+0x11A6047): param = encount controller (control comp 0x12) +0x1A8;
+  battle control = +0xFFA4F0(); **PreLoad +0x1000C60** (copies param to ctl+0x298, sets +0x2BD) then
+  **Encount +0x10062E0**. Replacing the param only in Load* froze a joined boss battle (assets of the original
+  encounter preloaded) -> the joiner now replaces it ONCE, at PreLoad (later steps fill PreemptiveOriginal).
+- **Test B (guest, `bot guest`, "start 838" without PARAM): join WORKS** (ForceEncount via Lua join_go.txt ->
+  Shadow id 1 -> battle 1002 = encounter 838) but the boss froze on its skill 402: without the starter's PARAM
+  the stage stays the joiner's floor stage (206.101 instead of the boss arena). Real starters always send PARAM.
+- PARAM captured from a real host battle (encounter 933, floor 214):
+  `A503000001000000FFFFFFFFFFFFFFFFFFFFFFFFCE00000065000000000000000000D2E5` (stage 206.101, preemptive 1).
+- **Remote units automatic: WORKS** — Lua `BtlDataBaseComponent:SetManualOperate(actor, false)` at the joint
+  battle's start (battle_coop.txt) makes the partner's units decide by AI with no menu, **MC included**; their
+  DoCommand is held and replaced by the partner's command (guest test: P1 turn 3, P0 turn 4, both answered).
+- **Boss wait:** Adamah 246 boss = `BP_FldEmUnique_194_C`, EnemyType 4 (Gatekeeper), id 0, the floor's only
+  enemy. Forced request (ForceEncount) -> held, "READY 0" sent, field stays playable; partner BATTLE with
+  enemyId 0 -> joined with the held request. But a forced request skips Fuuka's prompt script and gives encounter
+  1 (one Em0027), not 838 -> the real prompt flow must be tested (keyboard Ctrl/click attack didn't register in
+  this session; the 01:12 session triggered the prompt with W/S/Ctrl on top of the boss).
+- Joining needs a usable Shadow on the joiner's floor (transit/boss floors have none or only the boss).
+- Game over: MC dying in an attack-spam test ends the session (slot 7 vs encounter 933). Use slot 4 (Lv 76).
+
 ### Status at pause (2026-10-04 ~12:50)
 - **Crash on remote turns** (coreclr AV at +0x2e4ff2, 3x): first fixed a double kick (watcher rewrote kick.txt
   before the turn cleared → Ken acted twice). Still crashed on the first remote turn → suspect: in-place TArray

@@ -21,6 +21,11 @@ public class Mod
         if (config.DungeonProbe && _rng != null) _dungeon = new DungeonProbe(hooks, log, _rng, config.ForceSeed);
         if (config.XorProbe) _xor = new XorProbe(hooks, log);
         if (config.BattleRng) BattleRng.Install(log);   // after RngProbe: chains to its stub if both are on
-        if (config.BattleHooks) _battle = new BattleHooks(hooks, log, config.RunDir, config.BattleRngTestSeed);
+        if (config.BattleHooks)
+        {
+            var session = new Session(config.RunDir, log);
+            var encounter = new EncounterSync(hooks, log, session, config.RunDir);
+            _battle = new BattleHooks(hooks, log, config.RunDir, session, encounter, config.BattleRngTestSeed);
+        }
     }
 }

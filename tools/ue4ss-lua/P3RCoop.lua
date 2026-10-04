@@ -70,8 +70,24 @@ local function read_remote()
     return line
 end
 
+-- Joint battles: the partner started a battle and our field is idle -> the C# mod writes join_go.txt and we let
+-- the enemy manager request an encounter (its C# hook picks the partner's Shadow and sets the encounter).
+local function check_join()
+    local f = io.open(RUN .. "join_go.txt", "r")
+    if not f then return end
+    local id = f:read("*l"); f:close(); os.remove(RUN .. "join_go.txt")
+    local m = FindFirstOf("FldEnemyManager")
+    if valid(m) then
+        m:ForceEncount()
+        log("join " .. tostring(id) .. ": ForceEncount called")
+    else
+        log("join " .. tostring(id) .. ": no FldEnemyManager")
+    end
+end
+
 local next_player_search = 0
 local function tick()
+    check_join()
     if not valid(player) then
         -- FindAllOf scans every UObject: only retry every 2 s (the field pawn is hidden during battles)
         if os.clock() < next_player_search then return end

@@ -61,10 +61,36 @@ local function bot(cur, turn)
         ok and "ok" or ("FAILED " .. tostring(err))))
 end
 
+-- Joint battles: the C# BattleHooks writes battle_coop.txt = "<battle id> <partner slots>", e.g. "4 P2,P3".
+-- The partner's units are switched to automatic operation, so no command menu opens for them here (their AI
+-- choice is held by BattleHooks and replaced by the partner's real command).
+local coop_done = nil
+local function coop_battle_start()
+    local f = io.open(RUN .. "battle_coop.txt", "r")
+    if not f then return end
+    local line = f:read("*l") or ""; f:close()
+    local id, slots = line:match("^(%-?%d+)%s*(.*)$")
+    if not id or id == coop_done then return end
+    coop_done = id
+    if _G.COOP_AUTO_REMOTE == false or slots == "" then return end
+    local db = FindFirstOf("BtlDataBaseComponent")
+    if not valid(db) then log("  COOP no BtlDataBaseComponent"); return end
+    for slot in slots:gmatch("P(%d)") do
+        local i = tonumber(slot) + 1
+        local ok, err = pcall(function()
+            local actor = core.PlayerList[i]
+            db:SetManualOperate(actor, false)
+            log(string.format("  COOP battle %s: P%s (%s) set to automatic", id, slot, name(actor)))
+        end)
+        if not ok then log("  COOP SetManualOperate P" .. slot .. " failed: " .. tostring(err)) end
+    end
+end
+
 local function poll()
     if not valid(core) then
         if last_turn then
             log("battle over / no core"); last_turn, last_ai, last_am = nil, nil, nil
+            coop_done = nil
             local f = io.open(RUN .. "battle_end.txt", "w"); if f then f:write(os.date("%H:%M:%S")); f:close() end
         end
         -- FindFirstOf scans every UObject: outside battles only look again every 2 s
@@ -74,6 +100,7 @@ local function poll()
         am = FindFirstOf("BtlActionManagerComponent")
         if not valid(core) then return end
     end
+    coop_battle_start()
     local cur = core.CurrentAction
     local turn = name(cur)
     if turn ~= last_turn then

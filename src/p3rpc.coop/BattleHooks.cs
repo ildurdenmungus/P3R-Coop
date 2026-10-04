@@ -14,17 +14,18 @@ namespace p3rpc.coop;
 /// DoCommand. Units are named by portable slots: P0-P3 = BtlCore.PlayerList index, E0.. = EnemyList index.
 ///
 /// Files in RunDir (shared with the Lua game script and P3RCoopLink):
-///   remote_slots.txt   which party slots the OTHER player controls, e.g. "P2,P3"
 ///   local_cmds.txt     (we append) commands of our own units:      "b n slot type id targets"
 ///   cmd_request.txt    (we write)  a remote unit is waiting:        "b n slot"
 ///   remote_cmds.txt    (link appends) commands from the other game: "b n slot type id targets"
-///   kick.txt           (we write)  tells the Lua script to call DoCommand again once the command is here
+///   battle_coop.txt    (we write)  "b slots": the current joint battle and the partner's slots (for Lua)
+///   kick.txt           (we write)  emergency fallback: the Lua script calls DoCommand again
 ///   battle_override.txt  manual test override: "P3 5 0 -" (applied every time, any battle/turn)
-/// b = battle counter on this game, n = DoCommand counter within the battle (both games run the same
-/// battle in lockstep, so the counters line up).
+/// b = shared battle id (EncounterSync: the starter's id; local battles get negative ids), n = DoCommand
+/// counter within the battle (both games run the same battle in lockstep, so the counters line up).
+/// The partner's slots come from Session (host P0+P1 / guest P2+P3), only in joint battles.
 ///
-/// Remote unit's turn: DoCommand is NOT forwarded until the matching remote command has arrived; then the Lua
-/// script calls DoCommand again, we write the remote command into the action manager + AI and let it run.
+/// Remote unit's turn: DoCommand is NOT forwarded until the matching remote command has arrived; then the
+/// world-tick hook calls it again, we write the remote command into the action manager + AI and let it run.
 /// Offsets are from the UE4SS CXX dump of the Aug 2025 Steam build (see MODLOG "Battle").
 /// </summary>
 public unsafe class BattleHooks
@@ -96,15 +97,25 @@ public unsafe class BattleHooks
     private long _lastRemoteTicks;
 
     private readonly uint _testSeed;
+    private readonly Session _session;
+    private readonly EncounterSync _encounter;
+    private readonly PartySync _party;
+    private volatile bool _inBattle;                  // from the first DoCommand to the Lua battle-end note
+    private int _localBattles;
+    private HashSet<string> _remote = new();          // partner's slots in the current battle
 
-    public BattleHooks(IReloadedHooks hooks, CoopLog log, string runDir, uint battleRngTestSeed = 0)
+    public BattleHooks(IReloadedHooks hooks, CoopLog log, string runDir, Session session, EncounterSync encounter, uint battleRngTestSeed = 0)
     {
         _log = log;
         _dir = runDir;
+        _session = session;
+        _encounter = encounter;
+        _party = new PartySync(log, session, () => _inBattle);
         _testSeed = battleRngTestSeed;
         if (_testSeed != 0) BattleRng.Arm(_testSeed);   // one-PC test: every battle uses this seed
         Directory.CreateDirectory(runDir);
         Delete("kick.txt"); Delete("battle_end.txt"); Delete("cmd_request.txt"); Delete("remote_cmds.txt"); Delete("local_cmds.txt");   // stale commands from an earlier session would be replayed
+        Delete("battle_coop.txt");
 
         var exe = (long)Process.GetCurrentProcess().MainModule!.BaseAddress;
         _setCommand = hooks.CreateHook<SetCommandFn>(SetCommandImpl, exe + RvaSetCommand).Activate();
@@ -124,12 +135,19 @@ public unsafe class BattleHooks
     {
         try
         {
-            if (_waiting is { } w && _heldAm != 0 && _received.ContainsKey((w.Battle, w.Turn)))
+            _encounter.Tick();
+            _party.Tick();
+            if (_waiting is { } w && _heldAm != 0)
             {
-                var am = _heldAm;
-                _heldAm = 0;
-                _log.Info($"Battle {w.Battle} turn {w.Turn}: releasing {w.Slot} at world tick");
-                DoCommandImpl(am);
+                bool arrived = _received.ContainsKey((w.Battle, w.Turn));
+                bool alone = !arrived && !IsRemote(w.Slot);       // partner could not join / link lost: play it here
+                if (arrived || alone)
+                {
+                    var am = _heldAm;
+                    _heldAm = 0;
+                    _log.Info($"Battle {w.Battle} turn {w.Turn}: releasing {w.Slot} at world tick" + (alone ? " (partner gone: local command)" : ""));
+                    DoCommandImpl(am);
+                }
             }
         }
         catch (Exception e) { _log.Error("WorldTick hook: " + e.Message); }
@@ -146,9 +164,29 @@ public unsafe class BattleHooks
     private void EnsureBattle(nint core)
     {
         if (core == _core) return;
-        _core = core; _battle++; _turn = 0; _waiting = null;
-        _received.Clear();
+        _core = core; _turn = 0; _waiting = null; _inBattle = true;
+        var b = _encounter.Current;
+        if (b != null) { b.CoreSeen = true; _battle = b.Id; }
+        else _battle = -++_localBattles;                       // not shared with the partner
+        // Commands of this battle may already be here (the partner's game started it first); drop older ones.
+        foreach (var key in _received.Keys) if (key.Item1 != _battle) _received.TryRemove(key, out _);
         BattleRng.SetGameThread(GetCurrentThreadId());
+
+        var test = _session.TestSlots();
+        _remote = test.Count > 0 ? test : b != null ? _session.RemoteSlots() : new HashSet<string>();
+        Write("battle_coop.txt", $"{_battle} {string.Join(",", _remote)}");
+        _log.Info($"Battle {_battle} starts: " + (b == null ? "local" : b.Starter ? "we started it" : "joined the partner's") +
+                  (_remote.Count > 0 ? $", partner commands {string.Join(",", _remote)}" : ""));
+    }
+
+    // A party slot the partner commands right now. A solo battle (partner could not join) or a lost link makes
+    // every unit ours again; one-PC tests (remote_slots.txt) never go solo.
+    private bool IsRemote(string slot)
+    {
+        if (!_remote.Contains(slot) || !slot.StartsWith('P')) return false;
+        if (_session.TestSlots().Count > 0) return true;
+        var b = _encounter.Current;
+        return b != null && b.Id == _battle && !b.Solo && _session.Connected;
     }
 
     private void SetCommandImpl(nint am, nint commander, byte type, int id)
@@ -187,15 +225,25 @@ public unsafe class BattleHooks
 
         if (ManualOverride(am, commander, slot)) { LogCmd("DoCommand", am, commander, slot, " (OVERRIDDEN)"); return true; }
 
-        if (!RemoteSlots().Contains(slot) || !slot.StartsWith('P'))
+        if (!IsRemote(slot))
         {
-            LogCmd("DoCommand", am, commander, slot, "");
-            if (slot.StartsWith('P'))
+            if (resumed) { _waiting = null; _heldAm = 0; Delete("cmd_request.txt"); }
+            LogCmd("DoCommand", am, commander, slot, resumed ? " (held turn, played here)" : "");
+            if (slot.StartsWith('P') && _remote.Count > 0)
                 Append("local_cmds.txt", $"{_battle} {_turn} {slot} {*(byte*)(am + AmType)} {*(int*)(am + AmId)} {Targets(commander, am + AmTargets)}");
             return true;
         }
 
-        if (_received.TryRemove((_battle, _turn), out var cmd) && cmd.Slot == slot)
+        if (_received.TryGetValue((_battle, _turn), out var other) && other.Slot != slot)
+        {
+            // The partner's game had another unit's turn here: the battles diverged. Stop the lockstep.
+            _log.Error($"Battle {_battle} turn {_turn}: DESYNC (partner's turn {_turn} was {other.Slot}, ours is {slot}) -> playing alone");
+            if (_encounter.Current is { } cur && cur.Id == _battle) cur.Solo = true;
+            if (resumed) { _waiting = null; _heldAm = 0; Delete("cmd_request.txt"); }
+            return true;
+        }
+
+        if (_received.TryRemove((_battle, _turn), out var cmd))
         {
             Apply(am, commander, cmd.Type, cmd.Id, cmd.Targets);
             _waiting = null;
@@ -229,12 +277,20 @@ public unsafe class BattleHooks
             Thread.Sleep(50);
             try
             {
+                foreach (var m in _session.Receive())
+                {
+                    try { _encounter.OnMessage(m); _party.OnMessage(m); } catch (Exception e) { _log.Error($"message '{string.Join(' ', m)}': {e.Message}"); }
+                }
                 // The Lua script reports the end of every battle: summarise the shared rolls and re-arm for the next.
                 var end = Path.Combine(_dir, "battle_end.txt");
                 if (File.Exists(end))
                 {
                     File.Delete(end);
                     BattleRng.Disarm();
+                    _encounter.OnBattleEnd();
+                    _inBattle = false;
+                    _core = 0;                                 // a new battle may reuse the same core object
+                    Delete("battle_coop.txt");
                     if (_testSeed != 0) BattleRng.Arm(_testSeed);
                 }
                 if (!File.Exists(path)) continue;
@@ -324,18 +380,6 @@ public unsafe class BattleHooks
         var n = Math.Min(targets.Count, data == null ? 0 : max);
         for (int i = 0; i < n; i++) data[i] = targets[i];
         *(int*)(arr + 8) = n;
-    }
-
-    private HashSet<string> RemoteSlots()
-    {
-        try
-        {
-            var path = Path.Combine(_dir, "remote_slots.txt");
-            return File.Exists(path)
-                ? File.ReadAllText(path).Split(new[] { ',', ' ', '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries).ToHashSet()
-                : new HashSet<string>();
-        }
-        catch { return new HashSet<string>(); }
     }
 
     private void LogCmd(string what, nint am, nint commander, string slot, string suffix) =>
