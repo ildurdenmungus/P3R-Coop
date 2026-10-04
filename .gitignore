@@ -6,3 +6,5 @@ recon/
 bin/
 obj/
 *.user
+run/
+bin/link/
