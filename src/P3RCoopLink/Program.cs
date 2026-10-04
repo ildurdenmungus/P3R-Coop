@@ -50,10 +50,11 @@ void WriteRemote(string line)
 switch (mode)
 {
     case "mirror": await Mirror(); break;
+    case "bot": await Bot(); break;
     case "host": await RunPeer(isHost: true, hostIp: null); break;
     case "join": await RunPeer(isHost: false, hostIp: args.Length > 1 ? args[1] : null); break;
     default:
-        Console.WriteLine("usage: P3RCoopLink host | join [ip] | mirror");
+        Console.WriteLine("usage: P3RCoopLink host | join [ip] | mirror | bot");
         return;
 }
 
@@ -78,6 +79,28 @@ async Task Mirror()
             }
         }
         await Task.Delay(50);
+    }
+}
+
+// One-PC battle test: stands in for the other player. When the game holds a remote unit's turn
+// (cmd_request.txt = "b n slot"), answer 1.5 s later with a normal attack on the first enemy.
+async Task Bot()
+{
+    Status("bot mode: answering remote battle turns with 'attack E0' after 1.5 s");
+    var req = Path.Combine(dir, "cmd_request.txt");
+    var outPath = Path.Combine(dir, "remote_cmds.txt");
+    string? answered = null;
+    while (true)
+    {
+        await Task.Delay(100);
+        string? line = null;
+        try { if (File.Exists(req)) line = File.ReadAllText(req).Trim(); } catch { }
+        if (string.IsNullOrEmpty(line) || line == answered) continue;
+        answered = line;
+        await Task.Delay(1500);
+        var cmd = $"{line} 1 0 E0";      // "b n slot" + type 1 (attack), id 0, target enemy 0
+        File.AppendAllText(outPath, cmd + Environment.NewLine);
+        Status($"answered: {cmd}");
     }
 }
 

@@ -1,4 +1,4 @@
-using System.Text.Json;
+﻿using System.Text.Json;
 
 namespace p3rpc.coop;
 
@@ -13,6 +13,12 @@ public class Config
 
     /// <summary>With DungeonProbe: srand(ForceSeed) on the game thread before CREATE_LAYOUT (0 = off).</summary>
     public uint ForceSeed { get; set; }
+
+    /// <summary>Native battle command capture/override (BattleHooks). On by default.</summary>
+    public bool BattleHooks { get; set; } = true;
+
+    /// <summary>Folder shared with the game script and P3RCoopLink (battle_override.txt etc.).</summary>
+    public string RunDir { get; set; } = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "P3R-Coop", "run");
 
     /// <summary>Folder for coop.log and the recon logs.</summary>
     public string LogDir { get; set; } = @"C:\Users\mbasd\P3R-Coop\recon";

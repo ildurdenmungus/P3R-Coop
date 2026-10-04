@@ -8,3 +8,5 @@ obj/
 *.user
 run/
 bin/link/
+shots/
+bin/

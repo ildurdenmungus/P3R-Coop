@@ -134,6 +134,34 @@ Launch: `Reloaded-II.exe --launch "D:\...\P3R.exe"`. Only one P3R at a time (a 2
 - **Hardcoded `C:\Users\mbasd\...` paths** in the Lua + link app must become %USERPROFILE%-relative before
   the friend installs.
 
+### Battle command relay — WORKING on one PC (2026-10-04 12:13)
+- Recon (poll-only Lua `BattleRecon.lua`): every unit, player or enemy, has `BtlScriptAI`; a decision fills
+  ABtlAI.ActionType/ActionID/ActionSkillID/ActionItemID/ActionTargets, then BtlActionManagerComponent gets
+  commander/type/id/targets and executes. Types seen: 1 attack (id 0), 2 skill (id = skill), 3 item (id = item),
+  5 guard, 7 TAKEOVER/Shift (target = ally). Encounter: BtlCore.EncountParameter (EncountID, Preemptive).
+- **UE4SS 3.0.1 crashes** with Lua RegisterHook on BtlActor:StandbyAction/ToEndTurn and on
+  BtlActionManagerComponent:SetCommand* while a skill is chosen (AV reading 0x4abd in the ProcessEvent hook
+  path). Poll properties instead; do native hooks in C#.
+- Lua `am:SetCommand(); am:DoCommand()` at turn start does NOT work: the menu/AI decision later overwrites it
+  (and in one case the unit's turn was wasted — "Ken didn't do anything").
+- Native (C# `BattleHooks.cs`): SetCommand impl P3R.exe+0x10407F0 (this, commander, byte type, int id) — the
+  SetCommandWithTargets UFunction = SetCommand + targets; DoCommand impl +0x102FCE0 (this). Thunks via
+  find_natives.py (+0x15E63E0 / +0x15E4A00; the other table hit is the Z_Construct link table).
+- Slots: P<i> = BtlCore.PlayerList index (+0x2F8), E<i> = EnemyList (+0x308); actor→core at +0x3E0, AI +0x3D0.
+- **Remote turn loop:** DoCommand for a slot in run/remote_slots.txt is held (hook returns without calling the
+  original) → cmd_request.txt "b n slot" → command arrives in remote_cmds.txt "b n slot type id targets" →
+  C# writes kick.txt → Lua (game thread) calls am:DoCommand() again → hook writes type/id/targets into the
+  action manager + AI → original runs. Verified 4× in one battle (Ken chose Guard locally, ran the bot's
+  Attack E0), battle finished normally. Local units' commands go to local_cmds.txt for the link to send.
+- `P3RCoopLink bot` = stand-in partner (answers held turns with "attack E0" after 1.5 s).
+- Testing alone: `tools/shot.ps1` (desktop grab of the "P3R" window; um's gfxcapture needs an ffmpeg download),
+  `um win drive --proc P3R` for keys (Space confirm, C cancel/Guard, Enter talk/advance), bridge teleport of the
+  player pawn (`K2_SetActorLocation`) next to a `BP_FldEmNormal_C` to start a fight. ForceEncount() does nothing
+  on floor 214. Teleporter interaction box in the lobby = `BP_DHIT_BOX_C` at (1490,-470).
+- Launch hang: P3R sometimes stalls in Reloaded mod loading (after "R-II SteamHook … hooked") when launched
+  right after a previous instance crashed/closed; kill the stuck PID and launch again. Reloaded console is now
+  off (`ShowConsole=false`) — a selected console freezes the loader too.
+
 ## (old) Design v1: host-authoritative, controller-routed
 Running two separate copies of P3R in sync (Tartarus floor gen, battle RNG, events) is out of scope.
 Instead **one game runs on the host**, and the mod decides **which controller is allowed to drive the game**

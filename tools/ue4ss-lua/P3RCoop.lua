@@ -14,6 +14,7 @@ local seq, floor_id = 0, 0
 local player, ghost = nil, nil
 local last_remote, remote_age = nil, 999
 local target = nil            -- latest network position of the other player {X,Y,Z,Yaw}
+local next_ghost_search = 0
 
 local function log(s)
     local f = io.open(RUN .. "game.log", "a")
@@ -69,8 +70,15 @@ local function read_remote()
     return line
 end
 
+local next_player_search = 0
 local function tick()
-    if not valid(player) then player = find_player(); if not valid(player) then return end end
+    if not valid(player) then
+        -- FindAllOf scans every UObject: only retry every 2 s (the field pawn is hidden during battles)
+        if os.clock() < next_player_search then return end
+        next_player_search = os.clock() + 2
+        player = find_player()
+        if not valid(player) then return end
+    end
 
     local l = player:K2_GetActorLocation()
     local r = player:K2_GetActorRotation()
@@ -120,6 +128,8 @@ local ARRIVE_DISTANCE = 40
 local function steer()
     if not target then return end
     if not valid(ghost) then
+        if os.clock() < (next_ghost_search or 0) then return end
+        next_ghost_search = os.clock() + 2
         ghost = find_ghost()
         if not valid(ghost) then return end
         log("ghost actor = " .. ghost:GetFName():ToString())
@@ -148,7 +158,7 @@ LoopAsync(TICK_MS, function()
     return false
 end)
 
-LoopAsync(16, function()
+LoopAsync(33, function()
     if _G.P3RCOOP_GEN ~= GEN then return true end
     ExecuteInGameThread(function()
         local ok, err = pcall(steer)

@@ -210,3 +210,10 @@ LoopAsync(500, function()
 end)
 append("floor_events.log", now() .. "  CoopRecon loaded")
 print("[CoopRecon] loaded\n")
+
+-- Game-side co-op scripts live in the same Lua state as the bridge, so bridge 'eval dofile' replaces them
+-- (each file retires its old loops through a generation counter).
+for _, f in ipairs({ "P3RCoop.lua", "BattleRecon.lua" }) do
+    local ok, err = pcall(dofile, "C:/Users/mbasd/P3R-Coop/tools/ue4ss-lua/" .. f)
+    if not ok then append("floor_events.log", now() .. "  load " .. f .. " FAILED: " .. tostring(err)) end
+end
