@@ -17,6 +17,7 @@ focus() { powershell -NoProfile -ExecutionPolicy Bypass -File $P/tools/shot.ps1 
 
 powershell -NoProfile -ExecutionPolicy Bypass -File "C:\\Users\\mbasd\\P3R-Coop\\tools\\launch.ps1"
 start=$(date +%T)
+coop0=$(wc -l < "$R/coop.log"); battle0=$(wc -l < "$R/battle.log")   # cut this run's logs by line, not by clock (midnight)
 sleep 20; focus
 d "key 0x43"; sleep 5          # network features: No
 d "key 0x20"; sleep 5          # "network disabled" OK
@@ -40,17 +41,17 @@ tail -1 "$R/floor_events.log"
 # nearest one: Shadows wander, so "nearest" depends on timing and gives different encounters between runs.
 bridge 'eval local p for _, a in ipairs(FindAllOf("BP_FldPlayerDUNGEON_C") or {}) do if a:IsValid() and not a.bHidden then p = a end end local pl = p:K2_GetActorLocation() local first for _, a in ipairs(FindAllOf("BP_FldEmNormal_C") or {}) do if a:IsValid() and not a.bHidden and a:GetClass():GetFName():ToString() == "BP_FldEmNormal_C" then first = a break end end if not first then return "no shadow" end local l = first:K2_GetActorLocation() p:K2_SetActorLocation({X=l.X-120,Y=l.Y,Z=pl.Z}, false, {}, true) return string.format("next to %s (%s) at %.0f %.0f", first:GetFName():ToString(), first:GetClass():GetFName():ToString(), l.X, l.Y)'
 d "hold 0x57 600"; sleep 8
-grep -q "TURN" <(awk -v s="$start" '$1>=s' "$R/battle.log") || { echo "NO BATTLE STARTED"; exit 1; }
+grep -q "TURN" <(tail -n +$((battle0 + 1)) "$R/battle.log") || { echo "NO BATTLE STARTED"; exit 1; }
 if [ "${NOLOOP:-0}" = 1 ]; then echo "IN BATTLE (NOLOOP) $(date +%T)"; exit 0; fi
 for i in $(seq 1 60); do
   last=$(tail -1 "$R/battle.log")
   if echo "$last" | grep -q "battle over"; then echo "BATTLE OVER $(date +%T)"; break; fi
   tasklist //FI "IMAGENAME eq P3R.exe" | grep -q P3R || { echo "GAME GONE $(date +%T)"; break; }
-  d "key 0x20"; sleep 1; d "key 0x20"; sleep 4
+  for k in ${BATTLE_KEYS:-0x20 0x20}; do d "key $k"; sleep 1; done; sleep 3   # default: Space Space = Attack
 done
 sleep 4
-awk -v s="$start" '$1>=s' "$R/coop.log" > "$R/run_${L}_coop.log"
-awk -v s="$start" '$1>=s' "$R/battle.log" > "$R/run_${L}_battle.log"
+tail -n +$((coop0 + 1)) "$R/coop.log" > "$R/run_${L}_coop.log"
+tail -n +$((battle0 + 1)) "$R/battle.log" > "$R/run_${L}_battle.log"
 pid=$(tasklist //FI "IMAGENAME eq P3R.exe" //FO CSV //NH | head -1 | cut -d'"' -f4)
 [ -n "$pid" ] && powershell -NoProfile -Command "Stop-Process -Id $pid -Confirm:\$false" && echo "closed game pid $pid"
 echo "run $L done"

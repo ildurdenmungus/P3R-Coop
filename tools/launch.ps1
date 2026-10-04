@@ -12,6 +12,13 @@ for ($t = 1; $t -le $Tries; $t++) {
         $p = Get-Process -Name P3R -ErrorAction SilentlyContinue | Select-Object -First 1
         # UE4SS's debug window can be the "main" window, so judge by title OR by memory (a stuck loader sits at ~50 MB)
         if ($p -and ($p.MainWindowTitle -match "^(P3R|UE4SS)" -or $p.WorkingSet64 -gt 600MB)) { "try ${t}: running pid $($p.Id)"; exit 0 }
+        if ($p -and $p.MainWindowTitle -like "Oh Noes*") {
+            "try ${t}: crashed at startup (Oh Noes!), killing pid $($p.Id)"
+            Stop-Process -Id $p.Id -Confirm:$false
+            Get-Process -Name CrashReportClient -ErrorAction SilentlyContinue | ForEach-Object { Stop-Process -Id $_.Id -Confirm:$false }
+            Start-Sleep 4
+            break
+        }
         if ($p -and $i -ge 8 -and $p.WorkingSet64 -lt 200MB) {
             "try ${t}: stuck at $([int]($p.WorkingSet64/1MB)) MB, killing pid $($p.Id)"
             Stop-Process -Id $p.Id -Confirm:$false
