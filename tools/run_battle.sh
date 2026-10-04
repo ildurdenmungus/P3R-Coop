@@ -23,7 +23,8 @@ d "key 0x43"; sleep 5          # network features: No
 d "key 0x20"; sleep 5          # "network disabled" OK
 for i in 1 2 3 4; do d "key 0x0D"; sleep 4; done   # opening movie / intro / press any button
 d "key 0x0D"; sleep 3          # title: Load
-d "key 0x20"; sleep 3          # slot 7
+for i in $(seq 1 ${SLOT_UP:-0}); do d "key 0x26"; sleep 1; done   # SLOT_UP=3 -> slot 4 (menu starts on slot 7)
+d "key 0x20"; sleep 3          # slot 7 (or the one moved to)
 d "key 0x20"; sleep 3          # yes (load this save?)
 d "key 0x20"                   # again in case the dialog was late (harmless while loading)
 loaded=0
@@ -37,6 +38,7 @@ bridge 'eval for _, a in ipairs(FindAllOf("BP_FldPlayerDUNGEON_C") or {}) do if 
 for i in 1 2 3 4 5 6; do d "key 0x0D"; sleep 2; done
 sleep 14
 tail -1 "$R/floor_events.log"
+if [ "${STOP_AT_FLOOR:-0}" = 1 ]; then echo "ON FLOOR $(date +%T)"; exit 0; fi
 # First-spawned Shadow (FindAllOf follows object-index order = spawn order, deterministic per floor), not the
 # nearest one: Shadows wander, so "nearest" depends on timing and gives different encounters between runs.
 bridge 'eval local p for _, a in ipairs(FindAllOf("BP_FldPlayerDUNGEON_C") or {}) do if a:IsValid() and not a.bHidden then p = a end end local pl = p:K2_GetActorLocation() local first for _, a in ipairs(FindAllOf("BP_FldEmNormal_C") or {}) do if a:IsValid() and not a.bHidden and a:GetClass():GetFName():ToString() == "BP_FldEmNormal_C" then first = a break end end if not first then return "no shadow" end local l = first:K2_GetActorLocation() p:K2_SetActorLocation({X=l.X-120,Y=l.Y,Z=pl.Z}, false, {}, true) return string.format("next to %s (%s) at %.0f %.0f", first:GetFName():ToString(), first:GetClass():GetFName():ToString(), l.X, l.Y)'

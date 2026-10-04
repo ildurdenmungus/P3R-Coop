@@ -31,6 +31,8 @@ Real two-game co-op, Block Tales style. Both players own P3R and run it with the
   one duo. Touching the boss (or its door/event) shows "Waiting for <player>…" and freezes the encounter
   until the other duo arrives nearby and confirms; then both games start the same battle with all 4 members.
   (Block Tales does the same: everyone must be near the boss.)
+- **Stats come from the host's save (user, 2026-10-05):** party levels, Personas, gear, items are the host's;
+  the guest's own save is never used for co-op.
 - **State authority:** the host's game owns the save. The guest sends Duo B results (HP/SP/EXP/items picked
   up) back to the host after each battle or pickup.
 
@@ -207,6 +209,26 @@ Launch: `Reloaded-II.exe --launch "D:\...\P3R.exe"`. Only one P3R at a time (a 2
   battle start (same encounter on both games: same shadow by spawn index + FBtlEncountParam), joint battle ids
   instead of per-game counters, HP/SP sync at battle start, join window, boss wait, duo-only solo battles.
 - Normal play is safe: remote_slots.txt empty + BattleRngTestSeed 0 → mod only logs.
+
+### Held turns released at UWorld::Tick (2026-10-05) — commit 99447e5
+- Release point = start of `UWorld::Tick` (+0x31EA3A0, `(world, tickType, dt)`): game thread, once per frame,
+  before the battle updates. A held remote DoCommand is replayed there as soon as its command has arrived
+  (Apply: SetCommand + SetCommandTargets, then the original DoCommand). Lua kick.txt stays only as a 3 s
+  emergency fallback. Several battles: 0 kicks, 0 errors.
+- Dead ends: `UGameEngine::Tick` (+0x30FE4A0) — suspected UE4SS conflict, don't hook. ABtlAI update
+  (+0xFC6F60) runs for enemies only; +0x1274CB0 is the flowscript interpreter (hooking it slowed startup to
+  ~80 s, two UE4SS startup crashes). Intermittent startup AVs (UE4SS 0x10 / P3R 0x108) seen, cause unknown.
+
+### Boss test (2026-10-05, slot 4 = Adamah, Lv 76)
+- Slot 4 (30.01) starts at the Adamah teleporter; stairs → 246F. Boss = placed unique Shadow
+  `BP_FldEmUnique_194_C` at (0,-6400,888) (layout `DirectEnemy` marker, model 194). Touching it opens Fuuka's
+  prompt "Враг силен… готов к бою?" → "Пошли." / "Я еще не готов." — **the boss-wait hook point** (hold the
+  "Пошли." answer until the other player is near and confirms).
+- Encounter 838: Em0444 + Em0445 minions; party PC01, PC04, PC02, PC03; remote slot P3.
+  41 commands, 5 remote P3 turns held → released at world tick → executed; 0 errors, 0 duplicates, 0 kicks.
+  Party wiped (test loop only attacks) → game over screen; normal game logic.
+- Theurgia (T) opens the menu but is locked until the gauge fills; remote Theurgia (command type 11) IDs still
+  uncaptured.
 
 ### Status at pause (2026-10-04 ~12:50)
 - **Crash on remote turns** (coreclr AV at +0x2e4ff2, 3x): first fixed a double kick (watcher rewrote kick.txt
