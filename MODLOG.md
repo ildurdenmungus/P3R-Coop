@@ -162,6 +162,20 @@ Launch: `Reloaded-II.exe --launch "D:\...\P3R.exe"`. Only one P3R at a time (a 2
   right after a previous instance crashed/closed; kill the stuck PID and launch again. Reloaded console is now
   off (`ShowConsole=false`) — a selected console freezes the loader too.
 
+### Remote-turn crash FIXED (2026-10-04 14:55)
+- Root cause: SetCommandTargets impl (+0x1040820) takes the TArray by value and FREES its data at the end
+  (`jmp FMemory::Free` at +0x10408C6; MSVC callee-destroys by-value args). We passed CRT-heap memory → game
+  allocator freed foreign memory (+ we freed it again) → SEHException "External component has thrown an
+  exception", crash ~12 s later. Fix: header in our memory, data allocated by the game's
+  TArray::ResizeForCopy(+0x950CF0, this, NewMax, PrevMax) → hand it over, never free it ourselves.
+- Also fixed: watcher wrote kick.txt repeatedly → double DoCommand (Ken acted twice); now once per held turn,
+  plus a 300 ms duplicate guard. Bot keyed requests by text only → stalled when a new game session reused
+  "1 4 P3"; now keyed by text + file write time.
+- Verified: full battle with 3 remote turns (n4, n7, n13), no crash, no duplicates. (Party later wiped because
+  the test loop spams Attack — game over is normal game logic.)
+- Title flow (keys): content warning (auto) → network prompt C → "network disabled" OK Space → intro Enter →
+  press any button Enter → title "Load" Enter → slot 7 Space → confirm Space.
+
 ### Status at pause (2026-10-04 ~12:50)
 - **Crash on remote turns** (coreclr AV at +0x2e4ff2, 3x): first fixed a double kick (watcher rewrote kick.txt
   before the turn cleared → Ken acted twice). Still crashed on the first remote turn → suspect: in-place TArray
