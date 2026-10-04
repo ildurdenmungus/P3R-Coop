@@ -31,7 +31,8 @@ public unsafe class BattleHooks
 {
     private const long RvaSetCommand = 0x10407F0;   // via exec thunk P3R.exe+0x15E63E0
     private const long RvaDoCommand = 0x102FCE0;    // via exec thunk P3R.exe+0x15E4A00
-    private const long RvaFloorInit = 0x11ACDE0;    // AFldDungeonGameInit::FloorInit: game thread, runs before any Tartarus battle
+    private const long RvaFloorInit = 0x11ACDE0;
+    private const long RvaBattleSync = 0x11A6100;   // AFldDungeonGame::BattleSync (exec thunk +0x1669050): field-side per-frame battle sync?    // AFldDungeonGameInit::FloorInit: game thread, runs before any Tartarus battle
     private const long RvaResizeForCopy = 0x950CF0;        // TArray<T*>::ResizeForCopy(this, NewMax, PrevMax) -> FMemory::Realloc
     private const long RvaSetCommandTargets = 0x1040820;   // via exec thunk P3R.exe+0x15E64F0 (TArray* = copy source)
 
@@ -53,6 +54,9 @@ public unsafe class BattleHooks
     [Function(CallingConventions.Microsoft)]
     public delegate void FloorInitFn(nint self);
 
+    [Function(CallingConventions.Microsoft)]
+    public delegate void BattleSyncFn(nint self);
+
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
     private delegate void SetCommandTargetsNative(nint am, nint targetsArray);
 
@@ -66,6 +70,11 @@ public unsafe class BattleHooks
     private readonly IHook<SetCommandFn> _setCommand;
     private readonly IHook<DoCommandFn> _doCommand;
     private readonly IHook<FloorInitFn> _floorInit;
+    private readonly IHook<BattleSyncFn> _battleSync;
+    private nint _heldAm;                      // action manager of the held remote turn (release target)
+    private long _heldSince;                   // Stopwatch timestamp when the turn was held
+    private long _arrivedAt;                   // when the held turn's command arrived (0 = not yet)
+    private int _syncCalls; private long _syncWindow;
     private readonly SetCommandTargetsNative _setCommandTargets;
     private readonly ResizeForCopyNative _resizeForCopy;
 
@@ -93,10 +102,37 @@ public unsafe class BattleHooks
         _setCommand = hooks.CreateHook<SetCommandFn>(SetCommandImpl, exe + RvaSetCommand).Activate();
         _doCommand = hooks.CreateHook<DoCommandFn>(DoCommandImpl, exe + RvaDoCommand).Activate();
         _floorInit = hooks.CreateHook<FloorInitFn>(FloorInitImpl, exe + RvaFloorInit).Activate();
+        _battleSync = hooks.CreateHook<BattleSyncFn>(BattleSyncImpl, exe + RvaBattleSync).Activate();
         _setCommandTargets = Marshal.GetDelegateForFunctionPointer<SetCommandTargetsNative>((nint)(exe + RvaSetCommandTargets));
         _resizeForCopy = Marshal.GetDelegateForFunctionPointer<ResizeForCopyNative>((nint)(exe + RvaResizeForCopy));
         new Thread(WatchRemote) { IsBackground = true, Name = "coop-battle-remote" }.Start();
         log.Info("Battle hooks on (SetCommand, DoCommand, remote relay)");
+    }
+
+    // Release point for held remote turns: runs on the game thread from the field's own update, i.e. at a
+    // regular point of the frame - unlike the Lua kick, which runs inside an arbitrary UE4SS ProcessEvent
+    // callback (suspected cause of the remaining crashes). Also measures how often the game calls it.
+    private void BattleSyncImpl(nint self)
+    {
+        try
+        {
+            _syncCalls++;
+            var now = Stopwatch.GetTimestamp();
+            if (now - _syncWindow > Stopwatch.Frequency * 5)
+            {
+                if (_syncWindow != 0) _log.Quiet($"BattleSync {_syncCalls / 5.0:F1}/s");
+                _syncCalls = 0; _syncWindow = now;
+            }
+            if (_waiting is { } w && _heldAm != 0 && _received.ContainsKey((w.Battle, w.Turn)))
+            {
+                var am = _heldAm;
+                _heldAm = 0;
+                _log.Info($"Battle {w.Battle} turn {w.Turn}: releasing {w.Slot} from BattleSync");
+                DoCommandImpl(am);
+            }
+        }
+        catch (Exception e) { _log.Error("BattleSync hook: " + e.Message); }
+        _battleSync.OriginalFunction(self);
     }
 
     // Tell BattleRng which thread is the game thread before the first battle on this floor rolls anything.
@@ -159,6 +195,7 @@ public unsafe class BattleHooks
         {
             Apply(am, commander, cmd.Type, cmd.Id, cmd.Targets);
             _waiting = null;
+            _heldAm = 0;
             _lastRemoteActor = commander;
             _lastRemoteTicks = Stopwatch.GetTimestamp();
             Delete("cmd_request.txt");
@@ -170,6 +207,9 @@ public unsafe class BattleHooks
         if (!resumed)
         {
             _waiting = (_battle, _turn, slot);
+            _heldAm = am;
+            _heldSince = Stopwatch.GetTimestamp();
+            _arrivedAt = 0;
             Write("cmd_request.txt", $"{_battle} {_turn} {slot}");
             _log.Info($"Battle {_battle} turn {_turn}: holding {slot} until the other player's command arrives");
         }
@@ -208,7 +248,12 @@ public unsafe class BattleHooks
                     _log.Quiet($"remote cmd b{b} n{n} {cmd.Slot} type={cmd.Type} id={cmd.Id} targets={f[5]}");
                 }
                 _remoteReadPos = fs.Position;
-                if (_waiting is { } w && _received.ContainsKey((w.Battle, w.Turn)) && _kicked != (w.Battle, w.Turn))
+                // BattleSync never runs during battles (measured 2026-10-04: 0 calls in a full battle), so the Lua
+                // script releases the turn; wait 0.2 s after arrival in case a BattleSync release ever comes first.
+                if (_waiting is { } wa && _received.ContainsKey((wa.Battle, wa.Turn)) && _arrivedAt == 0)
+                    _arrivedAt = Stopwatch.GetTimestamp();
+                if (_waiting is { } w && _received.ContainsKey((w.Battle, w.Turn)) && _kicked != (w.Battle, w.Turn)
+                    && _arrivedAt != 0 && Stopwatch.GetTimestamp() - _arrivedAt > Stopwatch.Frequency / 5)
                 {
                     _kicked = (w.Battle, w.Turn);
                     Write("kick.txt", $"{w.Battle} {w.Turn}");

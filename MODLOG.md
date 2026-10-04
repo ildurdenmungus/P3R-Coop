@@ -192,6 +192,22 @@ Launch: `Reloaded-II.exe --launch "D:\...\P3R.exe"`. Only one P3R at a time (a 2
   the load dialog can appear late (press Space twice); FindAllOf order is not stable across launches (but the
   first Normal Shadow on 214 still gave encounter 933 every time); our SendInput resets the Windows idle timer.
 
+### LAN command relay WORKS (2026-10-04 16:46)
+- P3RCoopLink: TCP battle channel on 27777 next to UDP positions. Each side tails its game's local_cmds.txt →
+  "C <line>" → peer appends to remote_cmds.txt; "H" heartbeat; auto-reconnect. Loopback test:
+  tools/link_loopback_test.ps1 (host run\ + guest run_guest\ over 127.0.0.1). `fakeguest <hostRunDir>` plays the
+  guest GAME (answers the host's held turn into run_guest\local_cmds.txt).
+- In-game NET2 test: 5 remote Ken turns over TCP, no crash, battle won. NET1 crashed after the 3rd (coreclr AV
+  +0x2e4ff2 again) — intermittent; suspected cause: the Lua kick calls DoCommand from inside an arbitrary UE4SS
+  ProcessEvent callback (ExecuteInGameThread). `SetGamePaused(1)` does NOT freeze battle turns.
+  `AFldDungeonGame::BattleSync` (+0x11A6100) is never called during battles → useless as a release point.
+  Current build: Lua kick 0.2 s after the remote command arrives (BattleSync hook kept, harmless).
+- **Next:** find a safe game-thread release point for held turns (the battle's own per-frame tick, e.g. a vtable
+  Tick of BtlCoreComponent/BP_BtlControl_C, or hold at the AI-decision step instead of DoCommand); then joint
+  battle start (same encounter on both games: same shadow by spawn index + FBtlEncountParam), joint battle ids
+  instead of per-game counters, HP/SP sync at battle start, join window, boss wait, duo-only solo battles.
+- Normal play is safe: remote_slots.txt empty + BattleRngTestSeed 0 → mod only logs.
+
 ### Status at pause (2026-10-04 ~12:50)
 - **Crash on remote turns** (coreclr AV at +0x2e4ff2, 3x): first fixed a double kick (watcher rewrote kick.txt
   before the turn cleared → Ken acted twice). Still crashed on the first remote turn → suspect: in-place TArray

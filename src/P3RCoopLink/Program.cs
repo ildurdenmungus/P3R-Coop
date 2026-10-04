@@ -1,4 +1,4 @@
-﻿using System.Diagnostics;
+using System.Diagnostics;
 using System.Net;
 using System.Net.Sockets;
 using System.Text;
@@ -10,6 +10,12 @@ using System.Text;
 //   P3RCoopLink host            wait for a guest (announces itself on the LAN)
 //   P3RCoopLink join [ip]       join a host (finds one on the LAN if no ip is given)
 //   P3RCoopLink mirror          no network: echo our own state back 0.25 s late, offset sideways (one-PC test)
+//   P3RCoopLink bot             no network: answer held battle turns with "attack E0" (one-PC test)
+//   P3RCoopLink fakeguest <hostRunDir>   stand-in for the guest's GAME in a one-PC network test: when the host's
+//                               game holds a turn, write the answer into OUR local_cmds.txt so our link sends it
+//
+// Battle commands travel over TCP (same port number as UDP): each side tails its game's local_cmds.txt and
+// appends what it receives to remote_cmds.txt (read by the p3rpc.coop BattleHooks).
 
 const int GamePort = 27777;
 const int BeaconPort = 27778;
@@ -51,10 +57,11 @@ switch (mode)
 {
     case "mirror": await Mirror(); break;
     case "bot": await Bot(); break;
+    case "fakeguest": await FakeGuest(args.Length > 1 ? args[1] : @"C:\Users\mbasd\P3R-Coop\run"); break;
     case "host": await RunPeer(isHost: true, hostIp: null); break;
     case "join": await RunPeer(isHost: false, hostIp: args.Length > 1 ? args[1] : null); break;
     default:
-        Console.WriteLine("usage: P3RCoopLink host | join [ip] | mirror | bot");
+        Console.WriteLine("usage: P3RCoopLink host | join [ip] | mirror | bot | fakeguest <hostRunDir>");
         return;
 }
 
@@ -106,6 +113,106 @@ async Task Bot()
     }
 }
 
+// One-PC network test: plays the guest GAME's part. The guest's real game would reach the same held turn by
+// itself and write its unit's command to its own local_cmds.txt; here we watch the host's request instead.
+async Task FakeGuest(string hostDir)
+{
+    Status($"fakeguest: answering the host game's held turns (watching {hostDir}) through our local_cmds.txt");
+    var req = Path.Combine(hostDir, "cmd_request.txt");
+    var outPath = Path.Combine(dir, "local_cmds.txt");
+    string? answered = null;
+    while (true)
+    {
+        await Task.Delay(100);
+        string? line = null;
+        try { if (File.Exists(req)) line = File.ReadAllText(req).Trim() + "@" + File.GetLastWriteTimeUtc(req).Ticks; } catch { }
+        if (string.IsNullOrEmpty(line) || line == answered) continue;
+        answered = line;
+        await Task.Delay(1500);
+        var cmd = $"{line.Split('@')[0]} 1 0 E0";
+        File.AppendAllText(outPath, cmd + Environment.NewLine);
+        Status($"guest game chose: {cmd}");
+    }
+}
+
+// Reliable, ordered battle-command channel. Sends every new line of local_cmds.txt as "C <line>" and appends every
+// received "C <line>" to remote_cmds.txt. Returns when the connection drops.
+async Task CommandChannel(TcpClient tcp, CancellationToken ct)
+{
+    tcp.NoDelay = true;
+    var stream = tcp.GetStream();
+    var reader = new StreamReader(stream, Encoding.UTF8);
+    var writer = new StreamWriter(stream, new UTF8Encoding(false)) { AutoFlush = true, NewLine = "\n" };
+    var localCmds = Path.Combine(dir, "local_cmds.txt");
+    var remoteCmds = Path.Combine(dir, "remote_cmds.txt");
+    long pos = File.Exists(localCmds) ? new FileInfo(localCmds).Length : 0;   // only commands from now on
+
+    var recv = Task.Run(async () =>
+    {
+        string? line;
+        while ((line = await reader.ReadLineAsync()) != null)
+        {
+            if (!line.StartsWith("C ")) continue;                                 // "H" = heartbeat
+            File.AppendAllText(remoteCmds, line[2..] + Environment.NewLine);
+            Status($"received command: {line[2..]}");
+        }
+    });
+
+    while (!ct.IsCancellationRequested && !recv.IsCompleted)
+    {
+        try
+        {
+            if (File.Exists(localCmds))
+            {
+                using var fs = new FileStream(localCmds, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+                if (fs.Length < pos) pos = 0;                                     // the game reset the file at startup
+                if (fs.Length > pos)
+                {
+                    fs.Seek(pos, SeekOrigin.Begin);
+                    using var sr = new StreamReader(fs);
+                    string? l;
+                    while ((l = await sr.ReadLineAsync()) != null)
+                        if (l.Length > 0) { await writer.WriteLineAsync("C " + l); Status($"sent command: {l}"); }
+                    pos = fs.Length;
+                }
+            }
+            else pos = 0;
+            await writer.WriteLineAsync("H");                                    // heartbeat (detects a dead peer)
+        }
+        catch (IOException) { break; }
+        catch (ObjectDisposedException) { break; }
+        await Task.Delay(50, ct);
+    }
+}
+
+async Task RunCommandChannel(bool isHost, IPAddress? hostAddr, CancellationToken ct)
+{
+    while (!ct.IsCancellationRequested)
+    {
+        try
+        {
+            TcpClient tcp;
+            if (isHost)
+            {
+                var listener = new TcpListener(IPAddress.Any, GamePort);
+                listener.Start();
+                try { tcp = await listener.AcceptTcpClientAsync(ct); } finally { listener.Stop(); }
+            }
+            else
+            {
+                tcp = new TcpClient();
+                await tcp.ConnectAsync(hostAddr!, GamePort, ct);
+            }
+            Status($"battle channel connected ({tcp.Client.RemoteEndPoint})");
+            using (tcp) await CommandChannel(tcp, ct);
+            Status("battle channel lost, reconnecting...");
+        }
+        catch (OperationCanceledException) { return; }
+        catch (Exception e) { Status($"battle channel: {e.Message}"); }
+        await Task.Delay(1000, ct);
+    }
+}
+
 async Task RunPeer(bool isHost, string? hostIp)
 {
     using var udp = new UdpClient(new IPEndPoint(IPAddress.Any, isHost ? GamePort : 0));
@@ -117,14 +224,15 @@ async Task RunPeer(bool isHost, string? hostIp)
     if (isHost)
     {
         _ = Task.Run(() => Beacon(cts.Token));
-        Status($"hosting on UDP {GamePort}; waiting for a guest on the LANвЂ¦");
+        Status($"hosting on UDP {GamePort}; waiting for a guest on the LAN...");
     }
     else
     {
         var ip = hostIp != null ? IPAddress.Parse(hostIp) : await FindHost();
         peer = new IPEndPoint(ip, GamePort);
-        Status($"joining host {peer}вЂ¦");
+        Status($"joining host {peer}...");
     }
+    _ = Task.Run(() => RunCommandChannel(isHost, peer?.Address, cts.Token));
 
     // receive loop
     _ = Task.Run(async () =>
@@ -159,7 +267,7 @@ async Task RunPeer(bool isHost, string? hostIp)
             try { await udp.SendAsync(bytes, peer); } catch { }
             if (lastHeard.Elapsed.TotalSeconds > 3 && lastWarn.Elapsed.TotalSeconds > 5)
             {
-                Status(isHost ? "guest silent for 3 sвЂ¦" : "no answer from host yetвЂ¦");
+                Status(isHost ? "guest silent for 3 s..." : "no answer from host yet...");
                 lastWarn.Restart();
             }
         }
@@ -180,7 +288,7 @@ async Task Beacon(CancellationToken ct)
 
 async Task<IPAddress> FindHost()
 {
-    Status($"looking for a host on the LAN (UDP {BeaconPort})вЂ¦");
+    Status($"looking for a host on the LAN (UDP {BeaconPort})...");
     using var l = new UdpClient(new IPEndPoint(IPAddress.Any, BeaconPort));
     while (true)
     {

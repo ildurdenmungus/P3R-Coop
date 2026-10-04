@@ -1,0 +1,6 @@
+16:40:07  fakeguest: answering the host game's held turns (watching C:\Users\mbasd\P3R-Coop\run) through our local_cmds.txt
+16:43:26  guest game chose: 1 4 P3 1 0 E0
+16:44:04  guest game chose: 1 8 P3 1 0 E0
+16:45:01  guest game chose: 1 15 P3 1 0 E0
+16:45:34  guest game chose: 1 19 P3 1 0 E0
+16:46:11  guest game chose: 1 23 P3 1 0 E0

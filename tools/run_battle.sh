@@ -41,6 +41,7 @@ tail -1 "$R/floor_events.log"
 bridge 'eval local p for _, a in ipairs(FindAllOf("BP_FldPlayerDUNGEON_C") or {}) do if a:IsValid() and not a.bHidden then p = a end end local pl = p:K2_GetActorLocation() local first for _, a in ipairs(FindAllOf("BP_FldEmNormal_C") or {}) do if a:IsValid() and not a.bHidden and a:GetClass():GetFName():ToString() == "BP_FldEmNormal_C" then first = a break end end if not first then return "no shadow" end local l = first:K2_GetActorLocation() p:K2_SetActorLocation({X=l.X-120,Y=l.Y,Z=pl.Z}, false, {}, true) return string.format("next to %s (%s) at %.0f %.0f", first:GetFName():ToString(), first:GetClass():GetFName():ToString(), l.X, l.Y)'
 d "hold 0x57 600"; sleep 8
 grep -q "TURN" <(awk -v s="$start" '$1>=s' "$R/battle.log") || { echo "NO BATTLE STARTED"; exit 1; }
+if [ "${NOLOOP:-0}" = 1 ]; then echo "IN BATTLE (NOLOOP) $(date +%T)"; exit 0; fi
 for i in $(seq 1 60); do
   last=$(tail -1 "$R/battle.log")
   if echo "$last" | grep -q "battle over"; then echo "BATTLE OVER $(date +%T)"; break; fi
