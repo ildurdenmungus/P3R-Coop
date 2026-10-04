@@ -1,5 +1,6 @@
-using System.Collections.Concurrent;
+﻿using System.Collections.Concurrent;
 using System.Diagnostics;
+using System.Runtime.InteropServices;
 using Reloaded.Hooks.Definitions;
 using Reloaded.Hooks.Definitions.X64;
 using IReloadedHooks = Reloaded.Hooks.ReloadedII.Interfaces.IReloadedHooks;
@@ -30,6 +31,7 @@ public unsafe class BattleHooks
 {
     private const long RvaSetCommand = 0x10407F0;   // via exec thunk P3R.exe+0x15E63E0
     private const long RvaDoCommand = 0x102FCE0;    // via exec thunk P3R.exe+0x15E4A00
+    private const long RvaSetCommandTargets = 0x1040820;   // via exec thunk P3R.exe+0x15E64F0 (TArray* = copy source)
 
     // UBtlActionManagerComponent
     private const int AmCommander = 0xC8, AmType = 0xD0, AmId = 0xD4, AmTargets = 0xD8;
@@ -46,29 +48,37 @@ public unsafe class BattleHooks
     [Function(CallingConventions.Microsoft)]
     public delegate void DoCommandFn(nint am);
 
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    private delegate void SetCommandTargetsNative(nint am, nint targetsArray);
+
     private record Command(int Battle, int Turn, string Slot, byte Type, int Id, string[] Targets);
 
     private readonly CoopLog _log;
     private readonly string _dir;
     private readonly IHook<SetCommandFn> _setCommand;
     private readonly IHook<DoCommandFn> _doCommand;
+    private readonly SetCommandTargetsNative _setCommandTargets;
 
     private nint _core;                 // BtlCoreComponent of the current battle
     private int _battle, _turn;
     private (int Battle, int Turn, string Slot)? _waiting;
     private readonly ConcurrentDictionary<(int, int), Command> _received = new();
     private long _remoteReadPos;
+    private (int Battle, int Turn)? _kicked;          // kick.txt is written once per held turn
+    private nint _lastRemoteActor;                    // duplicate guard: actor + time of the last remote run
+    private long _lastRemoteTicks;
 
     public BattleHooks(IReloadedHooks hooks, CoopLog log, string runDir)
     {
         _log = log;
         _dir = runDir;
         Directory.CreateDirectory(runDir);
-        Delete("kick.txt"); Delete("cmd_request.txt");
+        Delete("kick.txt"); Delete("cmd_request.txt"); Delete("remote_cmds.txt"); Delete("local_cmds.txt");   // stale commands from an earlier session would be replayed
 
         var exe = (long)Process.GetCurrentProcess().MainModule!.BaseAddress;
         _setCommand = hooks.CreateHook<SetCommandFn>(SetCommandImpl, exe + RvaSetCommand).Activate();
         _doCommand = hooks.CreateHook<DoCommandFn>(DoCommandImpl, exe + RvaDoCommand).Activate();
+        _setCommandTargets = Marshal.GetDelegateForFunctionPointer<SetCommandTargetsNative>((nint)(exe + RvaSetCommandTargets));
         new Thread(WatchRemote) { IsBackground = true, Name = "coop-battle-remote" }.Start();
         log.Info("Battle hooks on (SetCommand, DoCommand, remote relay)");
     }
@@ -97,6 +107,13 @@ public unsafe class BattleHooks
         if (core != _core) { _core = core; _battle++; _turn = 0; _waiting = null; _received.Clear(); }
         var slot = Slot(commander);
 
+        // A second DoCommand for the unit whose remote command just ran is a duplicate (a late kick): drop it.
+        if (_waiting == null && commander == _lastRemoteActor && Stopwatch.GetTimestamp() - _lastRemoteTicks < Stopwatch.Frequency * 3 / 10)
+        {
+            _log.Info($"Battle {_battle}: ignored duplicate DoCommand for {slot}");
+            return false;
+        }
+
         // Re-entry from the Lua kick: same turn we were holding.
         bool resumed = _waiting is { } w && w.Battle == _battle && w.Slot == slot;
         if (!resumed) _turn++;
@@ -115,7 +132,10 @@ public unsafe class BattleHooks
         {
             Apply(am, commander, cmd.Type, cmd.Id, cmd.Targets);
             _waiting = null;
+            _lastRemoteActor = commander;
+            _lastRemoteTicks = Stopwatch.GetTimestamp();
             Delete("cmd_request.txt");
+            Delete("kick.txt");
             LogCmd("DoCommand", am, commander, slot, $" (REMOTE b{cmd.Battle} n{cmd.Turn})");
             return true;
         }
@@ -153,8 +173,11 @@ public unsafe class BattleHooks
                     _log.Quiet($"remote cmd b{b} n{n} {cmd.Slot} type={cmd.Type} id={cmd.Id} targets={f[5]}");
                 }
                 _remoteReadPos = fs.Position;
-                if (_waiting is { } w && _received.ContainsKey((w.Battle, w.Turn)))
+                if (_waiting is { } w && _received.ContainsKey((w.Battle, w.Turn)) && _kicked != (w.Battle, w.Turn))
+                {
+                    _kicked = (w.Battle, w.Turn);
                     Write("kick.txt", $"{w.Battle} {w.Turn}");
+                }
             }
             catch { /* file busy: next round */ }
         }
@@ -174,25 +197,37 @@ public unsafe class BattleHooks
         return false;
     }
 
-    // Write a command into the action manager and the unit's AI (the fields the menu/AI normally fill).
+    // Write a command the way the game does: SetCommand (type/id) + SetCommandTargets with a temporary TArray —
+    // the game copies it into the action manager with its own allocator. (Rewriting the manager's TArray in
+    // place could leave an attack with zero targets when the local pick had none -> crash, 2026-10-04.)
     private void Apply(nint am, nint commander, byte type, int id, string[] targetSlots)
     {
         var targets = new List<nint>();
         foreach (var t in targetSlots) { var p = FromSlot(commander, t); if (p != 0) targets.Add(p); }
 
-        *(byte*)(am + AmType) = type;
-        *(int*)(am + AmId) = id;
-        SetTargets(am + AmTargets, targets);
+        _setCommand.OriginalFunction(am, commander, type, id);
 
+        var tmp = (nint*)NativeMemory.AllocZeroed(16);
+        var buf = (nint*)NativeMemory.AllocZeroed((nuint)Math.Max(1, targets.Count) * 8);
+        try
+        {
+            for (int i = 0; i < targets.Count; i++) buf[i] = targets[i];
+            tmp[0] = (nint)buf;
+            ((int*)tmp)[2] = targets.Count;   // ArrayNum
+            ((int*)tmp)[3] = targets.Count;   // ArrayMax
+            _setCommandTargets(am, (nint)tmp);
+        }
+        finally { NativeMemory.Free(buf); NativeMemory.Free(tmp); }
+
+        // Mirror into the unit's AI decision fields (read by UI/logic); targets there only shrink in place.
         var ai = *(nint*)(commander + ActorAI);
         if (ai == 0) return;
         *(byte*)(ai + AiType) = type;
         *(uint*)(ai + AiId) = (uint)id;
         if (type == 2) *(uint*)(ai + AiSkill) = (uint)id;
         if (type == 3) *(uint*)(ai + AiItem) = (uint)id;
-        SetTargets(ai + AiTargets, targets);
+        if (targets.Count <= *(int*)(ai + AiTargets + 12)) SetTargets(ai + AiTargets, targets);
     }
-
     // TArray<ABtlActor*> = { T* data; int num; int max }. Rewrite in place only (no allocation from here):
     // shrink freely, grow only up to the existing capacity.
     private static void SetTargets(nint arr, List<nint> targets)

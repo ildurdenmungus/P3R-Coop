@@ -14,6 +14,9 @@ public class Config
     /// <summary>With DungeonProbe: srand(ForceSeed) on the game thread before CREATE_LAYOUT (0 = off).</summary>
     public uint ForceSeed { get; set; }
 
+    /// <summary>Research only: log callers of the xorshift128 helper P3R.exe+0x11AC2B0. Off by default.</summary>
+    public bool XorProbe { get; set; }
+
     /// <summary>Native battle command capture/override (BattleHooks). On by default.</summary>
     public bool BattleHooks { get; set; } = true;
 

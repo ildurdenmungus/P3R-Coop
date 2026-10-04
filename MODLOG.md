@@ -162,6 +162,21 @@ Launch: `Reloaded-II.exe --launch "D:\...\P3R.exe"`. Only one P3R at a time (a 2
   right after a previous instance crashed/closed; kill the stuck PID and launch again. Reloaded console is now
   off (`ShowConsole=false`) — a selected console freezes the loader too.
 
+### Status at pause (2026-10-04 ~12:50)
+- **Crash on remote turns** (coreclr AV at +0x2e4ff2, 3x): first fixed a double kick (watcher rewrote kick.txt
+  before the turn cleared → Ken acted twice). Still crashed on the first remote turn → suspect: in-place TArray
+  rewrite left 0 targets when the local pick had none. New build (installed, UNTESTED) applies remote commands
+  via the game itself: SetCommand (original) + SetCommandTargets impl P3R.exe+0x1040820 with a temp TArray copy.
+- **Battle RNG:** battle logic uses CRT rand on the game thread (call sites P3R.exe+0xFD0000..0x1040000), mixed
+  with frame-rate-dependent visual consumers (+0x36451F5, +0x1354156, ~33k calls/battle) → must give battle call
+  sites their own seeded per-site streams (IAT rand stub routes return addresses in the battle range to a
+  deterministic generator seeded per battle). Floors use the xorshift helper +0x11AC2B0 (dungeon code
+  +0x1198000..0x119D600, one state object) — that's why floors repeat.
+- Tools for solo testing: tools/launch.ps1 (single instance, retries stuck loads), tools/to_battle.sh (title →
+  slot 7 → Tartarus 214 → battle), tools/shot.ps1 (screenshot + focus).
+- Next: verify the SetCommandTargets fix; battle RNG streams; link app relays local_cmds/remote_cmds over LAN;
+  encounter start sync + join window + boss wait.
+
 ## (old) Design v1: host-authoritative, controller-routed
 Running two separate copies of P3R in sync (Tartarus floor gen, battle RNG, events) is out of scope.
 Instead **one game runs on the host**, and the mod decides **which controller is allowed to drive the game**
