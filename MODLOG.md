@@ -103,6 +103,12 @@ Launch: `Reloaded-II.exe --launch "D:\...\P3R.exe"`. Only one P3R at a time (a 2
 - Floor fingerprint (Lua, polling every 2 s over FldDungeonPartActor): first floor `8db2cf7d` = 7 parts on a
   3200-unit grid (types 1,3,4,4,6,6,11).
 - AutoFloorCreateActor (UFunction) fires for stairs floors; teleport arrivals did not fire it.
+- **RESULT (03:08): floors are deterministic per save + floor.** Session 1 (03:01) first teleport floor =
+  `c549011b` (10 parts, auto floor via AutoFloorCreateActor); after a full game restart and loading the same
+  save, the same floor = `c549011b` again. Also one floor revisited 3× in a session = `8c477e58` every time.
+  → M2 is solved by giving the guest a copy of the host's save: both games build identical floors. Shadows /
+  chests may still roll randomly → host-authoritative sync for those.
+  (Caveat: no floor number in the logs yet — add it before relying on per-floor hashes.)
 - **Command bridge** (CoopRecon Lua): write commands to `recon/cmd.txt`, results in `recon/bridge.log`
   (where | next | prev | setfield M m i | fp | census | eval <lua>). Needs the game to run unfocused →
   p3rpc.essentials `User\Mods\p3rpc.essentials\Config.json` = `{"RenderInBackground": true}`.
