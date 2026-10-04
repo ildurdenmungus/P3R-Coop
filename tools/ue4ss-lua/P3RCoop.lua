@@ -93,9 +93,16 @@ local function take_over(a)
     for _, path in ipairs(FOLLOW_COMPONENTS) do
         local cls = StaticFindObject(path)
         if cls and cls:IsValid() then
-            for _, c in ipairs(a:K2_GetComponentsByClass(cls) or {}) do
-                pcall(function() c:SetComponentTickEnabled(false) end)
-                log("ghost: disabled " .. c:GetClass():GetFName():ToString())
+            -- K2_GetComponentsByClass returns a UE4SS TArray (not a Lua table): walk it with ForEach + get()
+            local comps = a:K2_GetComponentsByClass(cls)
+            if comps then
+                comps:ForEach(function(_, elem)
+                    local c = elem:get()
+                    if c and c:IsValid() then
+                        pcall(function() c:SetComponentTickEnabled(false) end)
+                        log("ghost: disabled " .. c:GetClass():GetFName():ToString())
+                    end
+                end)
             end
         end
     end

@@ -115,6 +115,25 @@ Launch: `Reloaded-II.exe --launch "D:\...\P3R.exe"`. Only one P3R at a time (a 2
   **Gotcha:** essentials `IntroSkip` is an enum — writing `true` crashed the game twice (CLR fatal 0x80131506
   on live reload, startup JSON exception on launch).
 
+### M1 link + M3 ghost — 2026-10-04 (working on one PC, user: "its nice")
+- `src/P3RCoopLink` (net8 console, RollForward Major): `host` (UDP 27777 + LAN beacon on 27778), `join [ip]`
+  (auto-finds a host by beacon), `mirror` (echo own state 0.25 s late, +250 X). Exchanges one line per 50 ms.
+- IPC with the game = files in `P3R-Coop\run\`: `local.txt` (game writes `seq floor x y z yaw`),
+  `remote.txt` (link writes peer line, write-then-rename), `game.log`, `link_status.txt`.
+- `tools/ue4ss-lua/P3RCoop.lua` (auto-loaded via UE4SS mod `P3RCoop` whose main.lua dofile()s it; hot-reload
+  with the bridge: `eval return dofile(".../P3RCoop.lua")`, generation counter retires old loops).
+  Player pawn = visible `BP_FldPlayerDUNGEON_C`; ghost = last visible `BP_FldPartner_C`, follow components
+  (FldFollowerComp, FldPartnerComp) tick-disabled, controller tick paused, driven with AddMovementInput toward
+  the target (snap if > 600 units). Ghost only shown when floor ids match.
+- UE4SS Lua gotcha: `K2_GetComponentsByClass` returns a TArray → iterate with `:ForEach(function(i, e) e:get() end)`,
+  not ipairs.
+- Exit crash (coreclr 0xc0000602 when closing the game) happens without our mod too (02:20, before p3rpc.coop
+  existed) → community stack shutdown issue, harmless.
+- Saves: `%APPDATA%\SEGA\P3R\Steam\<steamid>\SaveDataNNN.sav` (~830 KB, XOR-obfuscated GVAS). For the guest we
+  copy the host's save into a free slot (never overwrite theirs).
+- **Hardcoded `C:\Users\mbasd\...` paths** in the Lua + link app must become %USERPROFILE%-relative before
+  the friend installs.
+
 ## (old) Design v1: host-authoritative, controller-routed
 Running two separate copies of P3R in sync (Tartarus floor gen, battle RNG, events) is out of scope.
 Instead **one game runs on the host**, and the mod decides **which controller is allowed to drive the game**
