@@ -25,7 +25,7 @@ public class Mod
         {
             var session = new Session(config.RunDir, log);
             var encounter = new EncounterSync(hooks, log, session, config.RunDir);
-            _battle = new BattleHooks(hooks, log, config.RunDir, session, encounter, config.BattleRngTestSeed);
+            _battle = new BattleHooks(hooks, log, config.RunDir, session, encounter, config.BattleRngTestSeed, config.SyncFloors);
         }
     }
 }

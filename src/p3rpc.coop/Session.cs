@@ -81,7 +81,7 @@ public class Session
             {
                 var f = line.Trim().Split(' ', StringSplitOptions.RemoveEmptyEntries);
                 if (f.Length == 0) continue;
-                if (f[0] is "HPSP" or "MCPERSONA") _log.Quiet("net <- " + line.Trim()); else _log.Info("net <- " + line.Trim());
+                if (f[0] is "HPSP" or "MCPERSONA" or "FLOORSEED") _log.Quiet("net <- " + line.Trim()); else _log.Info("net <- " + line.Trim());
                 list.Add(f);
             }
         }

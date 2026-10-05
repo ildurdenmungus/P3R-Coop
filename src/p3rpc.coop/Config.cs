@@ -27,6 +27,10 @@ public class Config
     /// <summary>Native battle command capture/override (BattleHooks). On by default.</summary>
     public bool BattleHooks { get; set; } = true;
 
+    /// <summary>Co-op: build Tartarus floors from a seed shared by the host (same layout on both games whatever
+    /// order the floors are reached in). Untested in a real session yet - set false if floors misbehave.</summary>
+    public bool SyncFloors { get; set; } = true;
+
     /// <summary>Folder shared with the game script and P3RCoopLink (battle_override.txt etc.).</summary>
     public string RunDir { get; set; } = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "P3R-Coop", "run");
 

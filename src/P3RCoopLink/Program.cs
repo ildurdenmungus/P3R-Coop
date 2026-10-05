@@ -154,20 +154,26 @@ async Task Bot(string role)
     // Key = content + write time: the game's battle/turn counters restart every launch, so the same "b n slot"
     // text comes back in a new session and must be answered again.
     string? answered = null;
-    string? nextAnswer = null, nextSlot = null;       // bot_cmd "next <slot> <type> <id> <targets>": that slot's next turn
+    string? nextAnswer = null, nextSlot = null;
+    int seedSent = 0;       // bot_cmd "next <slot> <type> <id> <targets>": that slot's next turn
     var beat = Stopwatch.StartNew();
     WritePeer(role, true);
     while (true)
     {
         await Task.Delay(100);
-        if (beat.ElapsedMilliseconds > 1000) { WritePeer(role, true); beat.Restart(); }
+        if (beat.ElapsedMilliseconds > 1000)
+        {
+            WritePeer(role, true);
+            beat.Restart();
+            if (role == "guest" && (seedSent++ % 5) == 0) File.AppendAllText(netIn, "FLOORSEED 777" + Environment.NewLine);   // we play the host
+        }
 
         foreach (var line in Tail(netOut, ref netOutPos))
         {
             var f = line.Split(' ');
             if (f[0] == "BATTLE" && f.Length > 1)
             {
-                File.AppendAllText(netIn, $"JOINED {f[1]}" + Environment.NewLine);
+                File.AppendAllText(netIn, $"JOINED {f[1]}" + Environment.NewLine + $"INBATTLE {f[1]}" + Environment.NewLine);
                 Status($"our game started battle {f[1]}: partner joined");
             }
         }
@@ -226,7 +232,7 @@ async Task FakeGuest(string hostDir)
             var f = l.Split(' ');
             if (f[0] == "BATTLE" && f.Length > 1)
             {
-                File.AppendAllText(netOut, $"JOINED {f[1]}" + Environment.NewLine);
+                File.AppendAllText(netOut, $"JOINED {f[1]}" + Environment.NewLine + $"INBATTLE {f[1]}" + Environment.NewLine);
                 Status($"host started battle {f[1]}: guest game joined");
             }
         }

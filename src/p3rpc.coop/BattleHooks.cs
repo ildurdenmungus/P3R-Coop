@@ -108,16 +108,24 @@ public unsafe class BattleHooks
     private readonly EncounterSync _encounter;
     private readonly PartySync _party;
     private volatile bool _inBattle;                  // from the first DoCommand to the Lua battle-end note
+    // Starter of a joint battle: the first action waits until the partner's battle is at its first turn too (the
+    // joiner loads seconds later; without this every later turn of theirs arrives that much late).
+    private nint _startHeldAm;
+    private bool _startGateDone;
+    private const long StartWaitMs = 30000;
     private int _localBattles;
     private HashSet<string> _remote = new();          // partner's slots in the current battle
 
-    public BattleHooks(IReloadedHooks hooks, CoopLog log, string runDir, Session session, EncounterSync encounter, uint battleRngTestSeed = 0)
+    private readonly FloorSync? _floors;
+
+    public BattleHooks(IReloadedHooks hooks, CoopLog log, string runDir, Session session, EncounterSync encounter, uint battleRngTestSeed = 0, bool syncFloors = true)
     {
         _log = log;
         _dir = runDir;
         _session = session;
         _encounter = encounter;
         _party = new PartySync(log, session, runDir, () => _inBattle);
+        _floors = syncFloors ? new FloorSync(hooks, log, session) : null;
         _testSeed = battleRngTestSeed;
         if (_testSeed != 0) BattleRng.Arm(_testSeed);   // one-PC test: every battle uses this seed
         Directory.CreateDirectory(runDir);
@@ -145,6 +153,20 @@ public unsafe class BattleHooks
         {
             _encounter.Tick();
             _party.Tick();
+            if (_startHeldAm != 0)
+            {
+                var sb = _encounter.Current;
+                bool go = sb == null || sb.PartnerInBattle || sb.Solo || !_session.Connected
+                          || Environment.TickCount64 - sb.StartedAt > StartWaitMs;
+                if (go)
+                {
+                    var am = _startHeldAm;
+                    _startHeldAm = 0;
+                    _startGateDone = true;
+                    _log.Info($"Battle {_battle}: partner ready" + (sb != null && !sb.PartnerInBattle ? " (timeout/solo)" : "") + ", first action runs");
+                    DoCommandImpl(am);
+                }
+            }
             if (_waiting is { } w && _heldAm != 0)
             {
                 bool arrived = _received.ContainsKey((w.Battle, w.Turn));
@@ -172,7 +194,7 @@ public unsafe class BattleHooks
     private void EnsureBattle(nint core)
     {
         if (core == _core) return;
-        _core = core; _turn = 0; _waiting = null; _inBattle = true;
+        _core = core; _turn = 0; _waiting = null; _inBattle = true; _startHeldAm = 0; _startGateDone = false;
         var b = _encounter.Current;
         if (b != null) { b.CoreSeen = true; _battle = b.Id; }
         else _battle = -++_localBattles;                       // not shared with the partner
@@ -233,6 +255,20 @@ public unsafe class BattleHooks
 
         if (ManualOverride(am, commander, slot)) { LogCmd("DoCommand", am, commander, slot, " (OVERRIDDEN)"); return true; }
 
+        if (!_startGateDone && !IsRemote(slot))
+        {
+            var sb = _encounter.Current;
+            if (sb != null && sb.Id == _battle && sb.Starter && !sb.Solo && !sb.PartnerInBattle && _session.Connected
+                && Environment.TickCount64 - sb.StartedAt <= StartWaitMs)
+            {
+                _turn--;                                       // counted again when it is released
+                _startHeldAm = am;
+                _log.Info($"Battle {_battle}: first action ({slot}) waits for the partner's battle to load");
+                return false;
+            }
+            _startGateDone = true;
+        }
+
         if (!IsRemote(slot))
         {
             if (resumed) { _waiting = null; _heldAm = 0; Delete("cmd_request.txt"); }
@@ -286,9 +322,18 @@ public unsafe class BattleHooks
             Thread.Sleep(50);
             try
             {
+                _floors?.Tick();
                 foreach (var m in _session.Receive())
                 {
-                    try { _encounter.OnMessage(m); _party.OnMessage(m); } catch (Exception e) { _log.Error($"message '{string.Join(' ', m)}': {e.Message}"); }
+                    try { _encounter.OnMessage(m); _party.OnMessage(m); _floors?.OnMessage(m); } catch (Exception e) { _log.Error($"message '{string.Join(' ', m)}': {e.Message}"); }
+                }
+                // Joiner: our battle reached its first turn (Lua) -> tell the starter, who is waiting for it.
+                var ready = Path.Combine(_dir, "battle_ready.txt");
+                if (File.Exists(ready))
+                {
+                    var rid = File.ReadAllText(ready).Trim();
+                    File.Delete(ready);
+                    if (_encounter.Current is { Starter: false } jb && jb.Id.ToString() == rid) _session.Send($"INBATTLE {rid}");
                 }
                 // The Lua script reports the end of every battle: summarise the shared rolls and re-arm for the next.
                 var end = Path.Combine(_dir, "battle_end.txt");

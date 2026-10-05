@@ -75,6 +75,8 @@ public unsafe class EncounterSync
         public bool CoreSeen;               // BattleHooks saw the battle start
         public bool Loaded;                 // the battle loaded its encounter here (Load* hooks)
         public int EncountId;               // joiner: the starter's encounter id (used if PARAM never came)
+        public bool CoopFileWritten;
+        public volatile bool PartnerInBattle;   // starter: the joiner's battle reached its first turn ("INBATTLE")
         public long StartedAt;
     }
 
@@ -198,7 +200,18 @@ public unsafe class EncounterSync
                 _bossEnemyId = -1;
                 _log.Info($"battle {b.Id} started without an encounter request (encount {*(int*)param}): announced at PreLoad");
             }
-            if (b != null) b.Loaded = true;
+            if (b != null)
+            {
+                b.Loaded = true;
+                if (!b.CoopFileWritten)
+                {
+                    // For the Lua script: the partner's units go automatic before the first turn's menu opens.
+                    b.CoopFileWritten = true;
+                    var test = _session.TestSlots();
+                    var slots = test.Count > 0 ? test : _session.RemoteSlots();
+                    try { File.WriteAllText(Path.Combine(_dir, "battle_coop.txt"), $"{b.Id} {string.Join(",", slots)}"); } catch { }
+                }
+            }
             if (b != null && b.Starter && !b.ParamDone)
             {
                 b.ParamDone = true;
@@ -334,6 +347,9 @@ public unsafe class EncounterSync
             case "READY" when f.Length >= 2:
                 _partnerReadyAt = Id();
                 _log.Info($"partner is at the boss (Shadow id {f[1]})");
+                break;
+            case "INBATTLE" when f.Length >= 2:
+                if (_current is { } ib && ib.Id == Id()) { ib.PartnerInBattle = true; _log.Info($"battle {ib.Id}: partner's battle is ready"); }
                 break;
             case "BUSY" when f.Length >= 2:
                 if (_current is { } sb && sb.Id == Id() && !sb.Joined) { sb.Solo = true; _log.Info($"battle {sb.Id}: partner busy -> solo"); }

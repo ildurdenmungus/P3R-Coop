@@ -76,7 +76,7 @@ public unsafe class PartySync
         {
             _pendingPersona = null;
             var bytes = Convert.FromHexString(hex);
-            if (bytes.Length == PersonaSize)
+            if (bytes.Length == PersonaSize && !new ReadOnlySpan<byte>((void*)(mc + UnitPersona), PersonaSize).SequenceEqual(bytes))
             {
                 fixed (byte* src = bytes) Buffer.MemoryCopy(src, (void*)(mc + UnitPersona), PersonaSize, PersonaSize);
                 _log.Info($"PartySync: MC Personas copied from the host (equipped slot {*(short*)(mc + UnitPersona)})");

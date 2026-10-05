@@ -287,7 +287,8 @@ end
 
 -- Walk the ghost toward the latest network position every frame-ish, so its own movement component plays
 -- the walk/run animation. Far away (new floor, stairs, desync) -> snap instead.
-local SNAP_DISTANCE = 600
+local SNAP_DISTANCE = 1500                -- far (stairs, new floor, desync): jump
+local PULL_DISTANCE = 200                 -- the partner pawn walks slower than a running player: pull it along
 local ARRIVE_DISTANCE = 40
 local function steer()
     if not target then return end
@@ -307,7 +308,11 @@ local function steer()
         ghost:K2_SetActorRotation({ Pitch = 0, Yaw = target.Yaw, Roll = 0 }, true)
     elseif dist > ARRIVE_DISTANCE then
         local scale = math.min(1.0, dist / 300)          -- slow down when close: walk, not sprint, into place
-        ghost:AddMovementInput({ X = dx / dist, Y = dy / dist, Z = 0 }, scale, true)
+        ghost:AddMovementInput({ X = dx / dist, Y = dy / dist, Z = 0 }, scale, true)   -- plays the run animation
+        if dist > PULL_DISTANCE then
+            local k = 0.2                                 -- close a fifth of the gap per step (~30 Hz)
+            ghost:K2_SetActorLocation({ X = cur.X + dx * k, Y = cur.Y + dy * k, Z = cur.Z }, false, {}, true)
+        end
     else
         ghost:K2_SetActorRotation({ Pitch = 0, Yaw = target.Yaw, Roll = 0 }, true)
     end

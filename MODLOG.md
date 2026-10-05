@@ -397,3 +397,23 @@ Hook pattern: `IStartupScanner.AddMainModuleScan(sig)` → `IReloadedHooks.Creat
   on FldHitActorBOX. Not a bug in the hook itself; avoid poking those objects.
 - To verify by hand in real play: strike the boss with the partner far away (nothing should happen), then with
   the partner next to it (prompt -> "Пошли" -> both games in the boss fight).
+
+### First real 2-PC session (2026-10-05 21:46, friend = host, early save, 3-member party) + fixes
+- Host started battle 2 (encount 94, stage 203.101), guest joined with the same PARAM and seed, host's P1 command
+  (skill 91) arrived and ran on the guest. Then the **host crashed**: battle_coop "P2,P3" but the party had only
+  P0-P2 -> Lua `db:SetManualOperate(core.PlayerList[4] = nothing)` -> native AV. The guest's 21:51:15 c0000602
+  is the normal game-exit failfast (game closed).
+- **Lag sources:** remote units were set automatic only after the first DoCommand (so the guest had to press
+  through a menu for the host's Yukari, 13 s); the joiner's battle starts ~7 s after the starter's, and that offset
+  is added to every remote turn; the ghost pawn walks slower than a running player.
+- **Fixes:** Lua skips slots beyond #PlayerList and waits until the party exists; battle_coop.txt is written at
+  PreLoad (EncounterSync) so units go automatic before the first menu; joiner Lua -> battle_ready.txt -> C# sends
+  `INBATTLE id`; the starter holds its first non-remote action until INBATTLE (30 s max, or solo/link lost);
+  MCPERSONA applied only when different; ghost pulled along (20%/tick) when > 200 behind, snap > 1500.
+- **Floor layout seed (user saw "floors out of sync", maybe not - the host hit a Shadow at once):** generator
+  +0x119B140(this, params) -> setup +0x119EE60 memsets a 0x4938 ctx, copies params words +0 (ctx+0x490E),
+  +2 (ctx+0x1A1C), +8 (ctx+0x1A1A), then XorSeed(ctx+0x1A40, params+2) (+0x11AC370: s0 = seed^0x0AED1A0C, ror 8,
+  ^0xAA5A02FE, ror 8, ^0x11BE81C7, ror 8). XorProbe had shown the state on the stack (0xF7BC60).
+  `FloorSync.cs`: host sends `FLOORSEED n` every 5 s; while connected both games replace params+2 with
+  hash(n, word+0, word+8). Logs "floor layout: params [...]". **Untested in game**; Config `SyncFloors` (default
+  true) turns it off.

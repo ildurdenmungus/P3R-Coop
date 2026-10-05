@@ -65,6 +65,10 @@ end
 -- Joint battles: the C# BattleHooks writes battle_coop.txt = "<battle id> <partner slots>", e.g. "4 P2,P3".
 -- The partner's units are switched to automatic operation, so no command menu opens for them here (their AI
 -- choice is held by BattleHooks and replaced by the partner's real command).
+-- battle_coop.txt is written when the battle loads (C# PreLoad hook), so this runs before the first turn's menu.
+-- When done, battle_ready.txt tells the C# side (the joiner then reports "INBATTLE" to the starter, who waits for
+-- that before its first action so both games start the battle together).
+-- Party slots that don't exist (a 3-member party has no P3) are skipped: SetManualOperate(nil) crashed the game.
 local coop_done = nil
 local function coop_battle_start()
     local f = io.open(RUN .. "battle_coop.txt", "r")
@@ -72,19 +76,30 @@ local function coop_battle_start()
     local line = f:read("*l") or ""; f:close()
     local id, slots = line:match("^(%-?%d+)%s*(.*)$")
     if not id or id == coop_done then return end
+    local n = 0
+    pcall(function() n = #core.PlayerList end)
+    if n == 0 then return end                         -- party not spawned yet: next poll
     coop_done = id
-    if _G.COOP_AUTO_REMOTE == false or slots == "" then return end
-    local db = FindFirstOf("BtlDataBaseComponent")
-    if not valid(db) then log("  COOP no BtlDataBaseComponent"); return end
-    for slot in slots:gmatch("P(%d)") do
-        local i = tonumber(slot) + 1
-        local ok, err = pcall(function()
-            local actor = core.PlayerList[i]
-            db:SetManualOperate(actor, false)
-            log(string.format("  COOP battle %s: P%s (%s) set to automatic", id, slot, name(actor)))
-        end)
-        if not ok then log("  COOP SetManualOperate P" .. slot .. " failed: " .. tostring(err)) end
+    if _G.COOP_AUTO_REMOTE ~= false and slots ~= "" then
+        local db = FindFirstOf("BtlDataBaseComponent")
+        if not valid(db) then log("  COOP no BtlDataBaseComponent") end
+        for slot in slots:gmatch("P(%d)") do
+            local i = tonumber(slot) + 1
+            if i > n then
+                log(string.format("  COOP battle %s: P%s not in this party (%d members), skipped", id, slot, n))
+            elseif valid(db) then
+                local ok, err = pcall(function()
+                    local actor = core.PlayerList[i]
+                    if not valid(actor) then error("no actor") end
+                    db:SetManualOperate(actor, false)
+                    log(string.format("  COOP battle %s: P%s (%s) set to automatic", id, slot, name(actor)))
+                end)
+                if not ok then log("  COOP SetManualOperate P" .. slot .. " failed: " .. tostring(err)) end
+            end
+        end
     end
+    local rf = io.open(RUN .. "battle_ready.txt", "w")
+    if rf then rf:write(id); rf:close() end
 end
 
 local function poll()
