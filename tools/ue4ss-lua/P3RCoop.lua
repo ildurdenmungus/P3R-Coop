@@ -23,6 +23,8 @@ local target_time = 0         -- os.time() of the last update (only set while bo
 local target_vel = { X = 0, Y = 0 }   -- partner's speed in units per tick, from the last two samples
 local target_seq = nil
 local steps_since = 0         -- steer() calls since the last sample (prediction horizon)
+-- Ghost tracking quality for game.log: distance ghost -> partner's reported position, averaged every 5 s.
+local err_sum, err_max, err_n, err_snaps, err_next = 0, 0, 0, 0, 0
 local next_ghost_search = 0
 
 local function log(s)
@@ -329,7 +331,15 @@ local function steer()
     local px, py = target.X + target_vel.X * ahead, target.Y + target_vel.Y * ahead
     local dx, dy = px - cur.X, py - cur.Y
     local dist = math.sqrt(dx * dx + dy * dy)
+    local ex, ey = target.X - cur.X, target.Y - cur.Y
+    local err = math.sqrt(ex * ex + ey * ey)
+    err_sum, err_n, err_max = err_sum + err, err_n + 1, math.max(err_max, err)
+    if os.time() >= err_next and err_n > 0 then
+        log(string.format("ghost tracking: avg %.0f max %.0f units, %d snaps, %d samples/5s", err_sum / err_n, err_max, err_snaps, err_n))
+        err_sum, err_max, err_n, err_snaps, err_next = 0, 0, 0, 0, os.time() + 5
+    end
     if dist > SNAP_DISTANCE then
+        err_snaps = err_snaps + 1
         ghost:K2_SetActorLocation({ X = target.X, Y = target.Y, Z = target.Z }, false, {}, true)
         ghost:K2_SetActorRotation({ Pitch = 0, Yaw = target.Yaw, Roll = 0 }, true)
     elseif dist > ARRIVE_DISTANCE then

@@ -119,8 +119,11 @@ async Task Mirror()
     Status("mirror mode: your own state comes back 0.25 s late, shifted 250 units");
     var history = new Queue<(long t, string line)>();
     var sw = Stopwatch.StartNew();
+    var beat = Stopwatch.StartNew();
+    WritePeer("host", true);                            // so the game shows a ghost (party.txt, ghost choice)
     while (true)
     {
+        if (beat.ElapsedMilliseconds > 1000) { WritePeer("host", true); beat.Restart(); }
         var line = ReadLocal();
         if (line != null) history.Enqueue((sw.ElapsedMilliseconds, line));
         while (history.Count > 0 && sw.ElapsedMilliseconds - history.Peek().t > 250)
@@ -134,7 +137,7 @@ async Task Mirror()
                 WriteRemote(string.Join(' ', f));
             }
         }
-        await Task.Delay(50);
+        await Task.Delay(33);
     }
 }
 
@@ -155,7 +158,8 @@ async Task Bot(string role)
     // text comes back in a new session and must be answered again.
     string? answered = null;
     string? nextAnswer = null, nextSlot = null;
-    int seedSent = 0;       // bot_cmd "next <slot> <type> <id> <targets>": that slot's next turn
+    int seedSent = 0;
+    var floorSeed = 777;       // bot_cmd "next <slot> <type> <id> <targets>": that slot's next turn
     var beat = Stopwatch.StartNew();
     WritePeer(role, true);
     while (true)
@@ -165,7 +169,7 @@ async Task Bot(string role)
         {
             WritePeer(role, true);
             beat.Restart();
-            if (role == "guest" && (seedSent++ % 5) == 0) File.AppendAllText(netIn, "FLOORSEED 777" + Environment.NewLine);   // we play the host
+            if (role == "guest" && (seedSent++ % 5) == 0) File.AppendAllText(netIn, $"FLOORSEED {floorSeed}" + Environment.NewLine);   // we play the host
         }
 
         foreach (var line in Tail(netOut, ref netOutPos))
@@ -185,6 +189,7 @@ async Task Bot(string role)
                 var c = File.ReadAllText(botCmd).Trim().Split(' ');
                 File.Delete(botCmd);
                 if (c[0] == "role" && c.Length > 1) { role = c[1]; WritePeer(role, true); Status($"our game is now the {role}"); }
+                if (c[0] == "floorseed" && c.Length > 1) { floorSeed = int.Parse(c[1]); seedSent = 0; Status($"floor seed now {floorSeed}"); }
                 if (c[0] == "ready" && c.Length > 1) { File.AppendAllText(netIn, $"READY {c[1]}" + Environment.NewLine); Status($"partner is at boss {c[1]}"); }
                 if (c[0] == "next" && c.Length > 4) { nextSlot = c[1]; nextAnswer = string.Join(' ', c[2..]); Status($"next {nextSlot} answer: {nextAnswer}"); }
                 if (c[0] == "start" && c.Length > 1)
