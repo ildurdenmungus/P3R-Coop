@@ -52,6 +52,7 @@ public unsafe class BattleHooks
     // ABtlAI
     private const int AiType = 0xAF0, AiId = 0xAF4, AiSkill = 0xAF8, AiItem = 0xAFC, AiTargets = 0xB08;
     private const int AiCharacter = 0xAE0, AiScript = 0xB70;
+    private const byte TypeSkill = 2, TypeTheurgia = 11;     // EBtlCommandType values used here
 
     [Function(CallingConventions.Microsoft)]
     public delegate void SetCommandFn(nint am, nint commander, byte type, int id);
@@ -230,7 +231,7 @@ public unsafe class BattleHooks
             if (resumed) { _waiting = null; _heldAm = 0; Delete("cmd_request.txt"); }
             LogCmd("DoCommand", am, commander, slot, resumed ? " (held turn, played here)" : "");
             if (slot.StartsWith('P') && _remote.Count > 0)
-                Append("local_cmds.txt", $"{_battle} {_turn} {slot} {*(byte*)(am + AmType)} {*(int*)(am + AmId)} {Targets(commander, am + AmTargets)}");
+                Append("local_cmds.txt", $"{_battle} {_turn} {slot} {CommandType(am, commander)} {*(int*)(am + AmId)} {Targets(commander, am + AmTargets)}");
             return true;
         }
 
@@ -340,12 +341,20 @@ public unsafe class BattleHooks
     // Write a command the way the game does: SetCommand (type/id) + SetCommandTargets with a temporary TArray —
     // the game copies it into the action manager with its own allocator. (Rewriting the manager's TArray in
     // place could leave an attack with zero targets when the local pick had none -> crash, 2026-10-04.)
+    // A Theurgia reaches the action manager as an ordinary skill (type 2, its skill id); only the unit's AI
+    // decision says type 11 (seen 2026-10-05: Akihiko 282, MC 260). Relay 11 so the other game marks it too.
+    private static byte CommandType(nint am, nint commander)
+    {
+        var ai = *(nint*)(commander + ActorAI);
+        return ai != 0 && *(byte*)(ai + AiType) == TypeTheurgia ? TypeTheurgia : *(byte*)(am + AmType);
+    }
+
     private void Apply(nint am, nint commander, byte type, int id, string[] targetSlots)
     {
         var targets = new List<nint>();
         foreach (var t in targetSlots) { var p = FromSlot(commander, t); if (p != 0) targets.Add(p); }
 
-        _setCommand.OriginalFunction(am, commander, type, id);
+        _setCommand.OriginalFunction(am, commander, type == TypeTheurgia ? TypeSkill : type, id);
 
         // The TArray parameter is by value: SetCommandTargets copies it and then FREES its data with the game's
         // allocator (MSVC: callee destroys by-value args). So the data must come from the game's allocator:
@@ -367,7 +376,7 @@ public unsafe class BattleHooks
         if (ai == 0) return;
         *(byte*)(ai + AiType) = type;
         *(uint*)(ai + AiId) = (uint)id;
-        if (type == 2) *(uint*)(ai + AiSkill) = (uint)id;
+        if (type == TypeSkill || type == TypeTheurgia) *(uint*)(ai + AiSkill) = (uint)id;
         if (type == 3) *(uint*)(ai + AiItem) = (uint)id;
         if (targets.Count <= *(int*)(ai + AiTargets + 12)) SetTargets(ai + AiTargets, targets);
     }

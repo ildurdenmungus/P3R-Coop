@@ -154,6 +154,7 @@ async Task Bot(string role)
     // Key = content + write time: the game's battle/turn counters restart every launch, so the same "b n slot"
     // text comes back in a new session and must be answered again.
     string? answered = null;
+    string? nextAnswer = null, nextSlot = null;       // bot_cmd "next <slot> <type> <id> <targets>": that slot's next turn
     var beat = Stopwatch.StartNew();
     WritePeer(role, true);
     while (true)
@@ -178,6 +179,7 @@ async Task Bot(string role)
                 var c = File.ReadAllText(botCmd).Trim().Split(' ');
                 File.Delete(botCmd);
                 if (c[0] == "role" && c.Length > 1) { role = c[1]; WritePeer(role, true); Status($"our game is now the {role}"); }
+                if (c[0] == "next" && c.Length > 4) { nextSlot = c[1]; nextAnswer = $"{c[2]} {c[3]} {c[4]}"; Status($"next {nextSlot} answer: {nextAnswer}"); }
                 if (c[0] == "start" && c.Length > 1)
                 {
                     var id = nextId++;
@@ -195,7 +197,10 @@ async Task Bot(string role)
         if (string.IsNullOrEmpty(held) || held == answered) continue;
         answered = held;
         await Task.Delay(1500);
-        var cmd = $"{held.Split('@')[0]} 1 0 E0";      // "b n slot" + type 1 (attack), id 0, target enemy 0
+        var req3 = held.Split('@')[0];
+        bool scripted = nextAnswer != null && req3.EndsWith(" " + nextSlot);
+        var cmd = $"{req3} {(scripted ? nextAnswer : "1 0 E0")}";   // default: type 1 (attack), id 0, target enemy 0
+        if (scripted) nextAnswer = null;
         File.AppendAllText(outPath, cmd + Environment.NewLine);
         Status($"answered: {cmd}");
     }
@@ -238,6 +243,7 @@ async Task FakeGuest(string hostDir)
 // P3R saves: %APPDATA%\SEGA\P3R\Steam\<steam id>\SaveDataNNN.sav (slot N). Newest account folder wins.
 string? SaveDir()
 {
+    if (Environment.GetEnvironmentVariable("P3RCOOP_SAVEDIR") is { Length: > 0 } test) return test;   // tests
     var root = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "SEGA", "P3R", "Steam");
     if (!Directory.Exists(root)) return null;
     return new DirectoryInfo(root).GetDirectories().OrderByDescending(d => d.LastWriteTimeUtc).FirstOrDefault()?.FullName;

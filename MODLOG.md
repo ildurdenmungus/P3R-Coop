@@ -273,6 +273,32 @@ Launch: `Reloaded-II.exe --launch "D:\...\P3R.exe"`. Only one P3R at a time (a 2
   this session; the 01:12 session triggered the prompt with W/S/Ctrl on top of the boss).
 - Joining needs a usable Shadow on the joiner's floor (transit/boss floors have none or only the boss).
 - Game over: MC dying in an attack-spam test ends the session (slot 7 vs encounter 933). Use slot 4 (Lv 76).
+- Load menu cursor = newest save (slot 7); SLOT_UP presses can land on the title menu if the menu is late
+  (pressed "New Game" once). Slot 6 = 263F top floor (no Shadows), slot 4 = 246 boss floor, slot 7 = 214.
+
+### Theurgia, HP/SP, kit (2026-10-05 evening)
+- **Theurgia** = AI decision type 11 + skill id, but the action manager gets SetCommand(type 2, same id)
+  (Akihiko 282 "Копье громовержца" on all enemies, MC 260 on all allies). BattleHooks now relays type 11
+  (from AI +0xAF0) and applies it as SetCommand(2, id) + AI type 11. **Remote MC Theurgia via bot: WORKS**
+  (battle 3 turn 8: DECIDE type=11 id=260, ACTMGR type=2 id=260, battle won). Gauge fill for tests:
+  `core.PlayerList[i]:AddTheurgiaGauge(7)` x40. Key T opens Theurgia, Space twice (skill, targets).
+- **UGlobalWork layout on this build = nativetypes' Astrea one:** 13 units at +0x1B0, ActiveCharacters at
+  **+0x24D4** (+0x1F6C read zeros). **HP/SP sync: WORKS** — an injected "HPSP 1 100 50 ..." showed up as MC
+  100/50 in the next battle (db:GetUnitHP). The field HUD keeps showing MAX until it refreshes (cosmetic).
+- **Save transfer (loopback): WORKS** — host `--save 4` -> guest got an identical SaveData002.sav (first free
+  slot). Test override: env P3RCOOP_SAVEDIR.
+- **Partner kit:** `tools/make_kit.ps1` -> dist/P3R-Coop-Kit.zip (34 MB): Reloaded-II + libs + co-op mod, UE4SS
+  mod "P3RCoop" (scripts copied, CoopRecon left out, cheats/keybinds off, no GUI console/hot reload),
+  RenderInBackground, link publish, install.ps1/Install.bat/README.txt (EN+RU). Installer: checks .NET 9
+  desktop, finds P3R via Steam libraryfolders.vdf, installs to %USERPROFILE%\P3R-Coop, writes AppConfig +
+  %APPDATA%\Reloaded-Mod-Loader-II\ReloadedII.json (backs up an existing one; LoaderSetupTimeout 120 s),
+  "Host co-op"/"Join co-op" .bat (OEM code page) + desktop shortcuts. Dry run with P3RCOOP_KIT_TEST=1 and a
+  fake USERPROFILE/APPDATA: OK. Dev PC host launcher: `Host co-op.bat` in the repo root.
+- Paths are now %USERPROFILE%\P3R-Coop\{run,recon} everywhere (Lua, mod config default, link).
+- F8 (Lua keybind) -> boss_solo.txt -> a held boss starts without waiting.
+- **Still open:** real Fuuka-prompt boss flow under the hold (couldn't trigger the prompt by keys this
+  session); MC Persona changes are not synced (guest's MC keeps its Persona -> damage can differ -> DESYNC ->
+  solo fallback); the guest's own pawn is still the MC model; first real two-PC test.
 
 ### Status at pause (2026-10-04 ~12:50)
 - **Crash on remote turns** (coreclr AV at +0x2e4ff2, 3x): first fixed a double kick (watcher rewrote kick.txt

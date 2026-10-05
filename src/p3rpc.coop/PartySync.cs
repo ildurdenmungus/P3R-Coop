@@ -8,13 +8,14 @@ namespace p3rpc.coop;
 /// writes them into its UGlobalWork units. So joint battles start from the same values on both games; inside a
 /// battle the lockstep keeps them equal and each battle writes its results back on both games.
 ///
-/// UGlobalWork (p3rpc.nativetypes): +0x1B0 FDatUnitWork[11] (0x2B4 each: ID +0x8, Status.Hp +0xC, Status.Sp +0x10),
-/// +0x1F6C ushort ActiveCharacters[10] = party order by character id (1 = MC).
+/// UGlobalWork (p3rpc.nativetypes, Astrea-era layout = the Aug 2025 build): +0x1B0 FDatUnitWork[13] (0x2B4 each:
+/// ID +0x8, Status.Hp +0xC, Status.Sp +0x10), +0x24D4 ushort ActiveCharacters[10] = party order by character id
+/// (1 = MC). (The older layout's +0x1F6C read zeros on this build.)
 /// </summary>
 public unsafe class PartySync
 {
     private const long RvaGetGlobalWork = 0x122AC90;   // p3rpc.nativetypes GetUGlobalWork signature
-    private const int Units = 0x1B0, UnitSize = 0x2B4, UnitId = 0x8, UnitHp = 0xC, UnitSp = 0x10, Active = 0x1F6C;
+    private const int Units = 0x1B0, UnitCount = 13, UnitSize = 0x2B4, UnitId = 0x8, UnitHp = 0xC, UnitSp = 0x10, Active = 0x24D4;
 
     private readonly CoopLog _log;
     private readonly Session _session;
@@ -23,6 +24,7 @@ public unsafe class PartySync
     private nint _gw;
     private long _lastTick, _lastSend;
     private string? _lastSent;
+    private long _diagAt = -60000;
     private volatile string[]? _pending;               // latest HPSP from the partner, applied on the game thread
 
     public PartySync(CoopLog log, Session session, Func<bool> inBattle)
@@ -68,6 +70,18 @@ public unsafe class PartySync
             var unit = UnitById(id);
             if (unit != 0) msg += $" {id} {*(int*)(unit + UnitHp)} {*(int*)(unit + UnitSp)}";
         }
+        if (msg == "HPSP" && now - _diagAt > 60000)
+        {
+            // Layout check: nothing found (no save loaded yet, or the layout moved) -> dump what we read.
+            _diagAt = now;
+            var act = string.Join(",", Enumerable.Range(0, 10).Select(i => *(ushort*)(_gw + Active + i * 2)));
+            var units = string.Join(" | ", Enumerable.Range(0, UnitCount).Select(i =>
+            {
+                var u = _gw + Units + i * UnitSize;
+                return $"{*(uint*)u:X} {*(ushort*)(u + 4)} {*(uint*)(u + 8)} hp{*(int*)(u + UnitHp)} sp{*(int*)(u + UnitSp)}";
+            }));
+            _log.Info($"PartySync: GlobalWork 0x{_gw:X}, active [{act}], units: {units}");
+        }
         if (msg == _lastSent && now - _lastSend < 5000) return;
         _lastSent = msg;
         _lastSend = now;
@@ -76,10 +90,10 @@ public unsafe class PartySync
 
     private nint UnitById(int id)
     {
-        if (id <= 0 || id > 11) return 0;
+        if (id <= 0 || id > UnitCount) return 0;
         var unit = _gw + Units + (id - 1) * UnitSize;
         if (*(int*)(unit + UnitId) == id) return unit;
-        for (int i = 0; i < 11; i++)
+        for (int i = 0; i < UnitCount; i++)
         {
             var u = _gw + Units + i * UnitSize;
             if (*(int*)(u + UnitId) == id) return u;
