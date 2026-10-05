@@ -417,3 +417,8 @@ Hook pattern: `IStartupScanner.AddMainModuleScan(sig)` → `IReloadedHooks.Creat
   `FloorSync.cs`: host sends `FLOORSEED n` every 5 s; while connected both games replace params+2 with
   hash(n, word+0, word+8). Logs "floor layout: params [...]". **Untested in game**; Config `SyncFloors` (default
   true) turns it off.
+- **Field movement "laggy / out of sync" (user):** the ghost takeover never logged a disabled follow component
+  (K2_GetComponentsByClass found none) -> the partner pawn's own follow logic kept pulling it back to the local
+  leader while we pushed it. Now `a.FldPartnerComp:SetComponentTickEnabled(false)` + controller StopMovement.
+  Position exchange 20 -> ~30 Hz (Lua tick 33 ms, link send 33 ms); the ghost aims at an extrapolated position
+  (velocity from the last two samples x ticks since, max 6).

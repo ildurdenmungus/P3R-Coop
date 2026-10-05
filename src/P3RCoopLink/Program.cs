@@ -428,7 +428,7 @@ async Task RunPeer(bool isHost, string? hostIp)
         }
     });
 
-    // send loop: our state at 20 Hz (a keepalive when the game hasn't written anything yet)
+    // send loop: our state at ~30 Hz (a keepalive when the game hasn't written anything yet)
     var lastWarn = Stopwatch.StartNew();
     var beat = Stopwatch.StartNew();
     var role = isHost ? "host" : "guest";
@@ -447,7 +447,7 @@ async Task RunPeer(bool isHost, string? hostIp)
                 lastWarn.Restart();
             }
         }
-        await Task.Delay(50);
+        await Task.Delay(33);
     }
 }
 

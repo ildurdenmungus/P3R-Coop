@@ -10,7 +10,7 @@
 
 local HOME = (os.getenv("USERPROFILE") or "C:/Users/Public"):gsub("\\", "/") .. "/P3R-Coop/"
 local RUN = HOME .. "run/"
-local TICK_MS = 50
+local TICK_MS = 33                   -- position exchange ~30 Hz (the link polls at the same rate)
 local MC = 1                         -- character id of the protagonist
 
 _G.P3RCOOP_GEN = (_G.P3RCOOP_GEN or 0) + 1
@@ -20,6 +20,9 @@ local player, ghost = nil, nil
 local last_remote, remote_age = nil, 999
 local target = nil            -- latest network position of the other player {X,Y,Z,Yaw}
 local target_time = 0         -- os.time() of the last update (only set while both are on the same floor)
+local target_vel = { X = 0, Y = 0 }   -- partner's speed in units per tick, from the last two samples
+local target_seq = nil
+local steps_since = 0         -- steer() calls since the last sample (prediction horizon)
 local next_ghost_search = 0
 
 local function log(s)
@@ -255,8 +258,16 @@ local function tick()
     if not rseq then return end
     if tonumber(rfloor) ~= floor_id then return end   -- other player is on another floor: leave the ghost alone
 
-    target = { X = tonumber(x), Y = tonumber(y), Z = tonumber(z), Yaw = tonumber(yaw) }
+    local nx, ny, ns = tonumber(x), tonumber(y), tonumber(rseq)
+    if target and target_seq and ns > target_seq and ns - target_seq < 30 then
+        target_vel = { X = (nx - target.X) / (ns - target_seq), Y = (ny - target.Y) / (ns - target_seq) }
+    else
+        target_vel = { X = 0, Y = 0 }
+    end
+    target = { X = nx, Y = ny, Z = tonumber(z), Yaw = tonumber(yaw) }
+    target_seq = ns
     target_time = os.time()
+    steps_since = 0
 end
 
 -- The borrowed partner normally follows our leader; switch that logic off so it only obeys the network.
@@ -278,8 +289,19 @@ local function take_over(a)
             end
         end
     end
+    -- BP_FldPartner_C.FldPartnerComp drives the follow-the-leader movement (the class lookup above found
+    -- nothing in the first real session, so the ghost kept walking back to our leader while we pushed it).
+    local ok = pcall(function()
+        local pc = a.FldPartnerComp
+        if pc and pc:IsValid() then
+            pc:SetComponentTickEnabled(false)
+            log("ghost: partner follow logic off (FldPartnerComp)")
+        end
+    end)
+    if not ok then log("ghost: no FldPartnerComp") end
     local ctrl = a.Controller
     if ctrl and ctrl:IsValid() then
+        pcall(function() ctrl:StopMovement() end)
         pcall(function() ctrl:SetActorTickEnabled(false) end)
         log("ghost: paused controller " .. ctrl:GetClass():GetFName():ToString())
     end
@@ -301,7 +323,11 @@ local function steer()
         take_over(ghost)
     end
     local cur = ghost:K2_GetActorLocation()
-    local dx, dy = target.X - cur.X, target.Y - cur.Y
+    -- Aim where the partner is now, not where the last packet said: extrapolate a few ticks (max ~0.2 s).
+    steps_since = steps_since + 1
+    local ahead = math.min(steps_since, 6)
+    local px, py = target.X + target_vel.X * ahead, target.Y + target_vel.Y * ahead
+    local dx, dy = px - cur.X, py - cur.Y
     local dist = math.sqrt(dx * dx + dy * dy)
     if dist > SNAP_DISTANCE then
         ghost:K2_SetActorLocation({ X = target.X, Y = target.Y, Z = target.Z }, false, {}, true)
