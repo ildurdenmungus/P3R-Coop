@@ -11,3 +11,4 @@ bin/link/
 shots/
 bin/
 run_guest/
+dist/

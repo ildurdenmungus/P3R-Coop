@@ -4,7 +4,8 @@
 -- The other player is shown by borrowing one of our party's partner pawns (Duo B) and moving it.
 -- Re-running this file (bridge: eval dofile(...)) replaces the previous instance cleanly.
 
-local RUN = "C:/Users/mbasd/P3R-Coop/run/"
+local HOME = (os.getenv("USERPROFILE") or "C:/Users/Public"):gsub("\\", "/") .. "/P3R-Coop/"
+local RUN = HOME .. "run/"
 local TICK_MS = 50
 local GHOST_PARTNER_INDEX = -1      -- which BP_FldPartner_C to borrow (-1 = last one)
 
@@ -83,6 +84,16 @@ local function check_join()
     else
         log("join " .. tostring(id) .. ": no FldEnemyManager")
     end
+end
+
+-- F8 at a boss that waits for the partner: fight it now (the partner joins if it can).
+if not _G.P3RCOOP_F8 then
+    _G.P3RCOOP_F8 = true
+    RegisterKeyBind(Key.F8, function()
+        local f = io.open(RUN .. "boss_solo.txt", "w")
+        if f then f:write("1"); f:close() end
+        log("F8: boss without waiting")
+    end)
 end
 
 local next_player_search = 0

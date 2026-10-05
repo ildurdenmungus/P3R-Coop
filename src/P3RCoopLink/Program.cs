@@ -38,7 +38,8 @@ for (int i = 1; i < args.Length; i++)
     else positional.Add(args[i]);
 }
 string? Arg(int i) => i < positional.Count ? positional[i] : null;
-var dir = Environment.GetEnvironmentVariable("P3RCOOP_DIR") ?? @"C:\Users\mbasd\P3R-Coop\run";
+var home = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "P3R-Coop");
+var dir = Environment.GetEnvironmentVariable("P3RCOOP_DIR") ?? Path.Combine(home, "run");
 Directory.CreateDirectory(dir);
 var localPath = Path.Combine(dir, "local.txt");
 var remotePath = Path.Combine(dir, "remote.txt");
@@ -105,7 +106,7 @@ switch (mode)
 {
     case "mirror": await Mirror(); break;
     case "bot": await Bot(Arg(0) ?? "host"); break;
-    case "fakeguest": await FakeGuest(Arg(0) ?? @"C:\Users\mbasd\P3R-Coop\run"); break;
+    case "fakeguest": await FakeGuest(Arg(0) ?? Path.Combine(home, "run")); break;
     case "host": await RunPeer(isHost: true, hostIp: null); break;
     case "join": await RunPeer(isHost: false, hostIp: Arg(0)); break;
     default:

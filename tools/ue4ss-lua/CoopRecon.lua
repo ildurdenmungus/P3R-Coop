@@ -1,8 +1,9 @@
-﻿-- CoopRecon: recon for the P3R co-op mod. Output goes to C:/Users/mbasd/P3R-Coop/recon/
+﻿-- CoopRecon (dev only): recon for the P3R co-op mod. Output goes to %USERPROFILE%/P3R-Coop/recon/
 -- F6 = class census + floor fingerprint
 -- Automatic: dungeon state-machine steps -> floor_events.log; fingerprint after every floor build.
 
-local OUT = "C:/Users/mbasd/P3R-Coop/recon/"
+local HOME = (os.getenv("USERPROFILE") or "C:/Users/Public"):gsub("\\", "/") .. "/P3R-Coop/"
+local OUT = HOME .. "recon/"
 local PATTERNS = { "Btl", "Battle", "Dng", "Dungeon", "Tartarus", "Encount", "Shadow", "Fld", "Party",
                    "Partner", "Player", "Command", "Turn", "Floor", "Map", "Pad", "Input", "Unit" }
 local census_n, floor_n = 0, 0
@@ -214,6 +215,6 @@ print("[CoopRecon] loaded\n")
 -- Game-side co-op scripts live in the same Lua state as the bridge, so bridge 'eval dofile' replaces them
 -- (each file retires its old loops through a generation counter).
 for _, f in ipairs({ "P3RCoop.lua", "BattleRecon.lua" }) do
-    local ok, err = pcall(dofile, "C:/Users/mbasd/P3R-Coop/tools/ue4ss-lua/" .. f)
+    local ok, err = pcall(dofile, HOME .. "tools/ue4ss-lua/" .. f)
     if not ok then append("floor_events.log", now() .. "  load " .. f .. " FAILED: " .. tostring(err)) end
 end

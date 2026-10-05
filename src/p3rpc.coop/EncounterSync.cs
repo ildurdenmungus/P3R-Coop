@@ -112,7 +112,7 @@ public unsafe class EncounterSync
         _log = log;
         _session = session;
         _dir = runDir;
-        try { File.Delete(Path.Combine(runDir, "join_go.txt")); } catch { }
+        try { File.Delete(Path.Combine(runDir, "join_go.txt")); File.Delete(Path.Combine(runDir, "boss_solo.txt")); } catch { }
         var exe = (long)Process.GetCurrentProcess().MainModule!.BaseAddress;
         _getFieldManager = (delegate* unmanaged<nint>)(exe + RvaGetFieldManager);
         _holderObject = (delegate* unmanaged<nint, nint>)(exe + RvaHolderObject);
@@ -240,10 +240,14 @@ public unsafe class EncounterSync
             NativeMemory.Free((void*)bh.Holder);
             return;
         }
-        if (_session.MyRole != Session.Role.Host || _partnerReadyAt != bh.EnemyId || _current != null) return;
+        // F8 (Lua writes boss_solo.txt): don't wait any longer - this game starts the boss, the partner joins if it can.
+        var solo = Path.Combine(_dir, "boss_solo.txt");
+        bool alone = File.Exists(solo);
+        if (alone) { try { File.Delete(solo); } catch { } }
+        if (!alone && (_session.MyRole != Session.Role.Host || _partnerReadyAt != bh.EnemyId || _current != null)) return;
         _boss = null;
         _partnerReadyAt = -1;
-        _log.Info($"boss {bh.EnemyId}: both players ready, starting");
+        _log.Info($"boss {bh.EnemyId}: " + (alone ? "starting without waiting (F8)" : "both players ready, starting"));
         _releasing = true;
         try { RequestEncountImpl(mgr, bh.Holder, bh.Reason); }
         finally { _releasing = false; NativeMemory.Free((void*)bh.Holder); }

@@ -1,13 +1,14 @@
 -- BattleRecon: logs how P3R battles flow — whose turn it is and what each unit decides to do.
--- Output: C:/Users/mbasd/P3R-Coop/recon/battle.log. Load/reload with the bridge:
+-- Output: %USERPROFILE%/P3R-Coop/recon/battle.log. Load/reload with the bridge:
 --   eval return dofile("C:/Users/mbasd/P3R-Coop/tools/ue4ss-lua/BattleRecon.lua")
 --
 -- Poll-only on purpose: UE4SS 3.0.1 crashed (2026-10-04) when Lua hooks were attached to
 -- BtlActor:StandbyAction / ToEndTurn and to BtlActionManagerComponent:SetCommand* while a skill was chosen
 -- (access violation reading 0x4abd inside the ProcessEvent hook path). Reading properties is safe.
 
-local OUT = "C:/Users/mbasd/P3R-Coop/recon/battle.log"
-local RUN = "C:/Users/mbasd/P3R-Coop/run/"
+local HOME = (os.getenv("USERPROFILE") or "C:/Users/Public"):gsub("\\", "/") .. "/P3R-Coop/"
+local OUT = HOME .. "recon/battle.log"
+local RUN = HOME .. "run/"
 _G.BATTLERECON_GEN = (_G.BATTLERECON_GEN or 0) + 1
 local GEN = _G.BATTLERECON_GEN
 

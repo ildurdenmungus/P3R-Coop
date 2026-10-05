@@ -31,7 +31,7 @@ public class Config
     public string RunDir { get; set; } = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "P3R-Coop", "run");
 
     /// <summary>Folder for coop.log and the recon logs.</summary>
-    public string LogDir { get; set; } = @"C:\Users\mbasd\P3R-Coop\recon";
+    public string LogDir { get; set; } = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "P3R-Coop", "recon");
 
     public static Config Load(string dir)
     {
