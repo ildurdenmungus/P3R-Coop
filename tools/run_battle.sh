@@ -22,7 +22,7 @@ sleep 20; focus
 d "key 0x43"; sleep 5          # network features: No
 d "key 0x20"; sleep 5          # "network disabled" OK
 for i in 1 2 3 4; do d "key 0x0D"; sleep 4; done   # opening movie / intro / press any button
-d "key 0x0D"; sleep 3          # title: Load
+d "key 0x0D"; sleep 6          # title: Load (the save list can open late: Up on the title = New Game!)
 for i in $(seq 1 ${SLOT_UP:-0}); do d "key 0x26"; sleep 1; done   # SLOT_UP=3 -> slot 4 (menu starts on slot 7)
 d "key 0x20"; sleep 3          # slot 7 (or the one moved to)
 d "key 0x20"; sleep 3          # yes (load this save?)

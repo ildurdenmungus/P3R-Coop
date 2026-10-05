@@ -42,11 +42,15 @@ public unsafe class BattleHooks
     // coincided with two UE4SS startup crashes.
     private const long RvaResizeForCopy = 0x950CF0;        // TArray<T*>::ResizeForCopy(this, NewMax, PrevMax) -> FMemory::Realloc
     private const long RvaSetCommandTargets = 0x1040820;   // via exec thunk P3R.exe+0x15E64F0 (TArray* = copy source)
+    // SetEquip(ushort charId, short stockIndex) -> bool: what UBtlDataBaseComponent::SetPersonaStockEquip (+0x1040B40)
+    // jumps to with the actor's unit id; sets FDatUnitWork+0x48 if that stock slot is in use (+0x4C + i*0x30, bit 0).
+    private const long RvaSetPersonaEquip = 0x12044E0;
 
     // UBtlActionManagerComponent
     private const int AmCommander = 0xC8, AmType = 0xD0, AmId = 0xD4, AmTargets = 0xD8;
     // ABtlActor
-    private const int ActorAI = 0x3D0, ActorCore = 0x3E0;
+    private const int ActorAI = 0x3D0, ActorCore = 0x3E0, ActorUnit = 0x328;   // ActorUnit = FDatUnitWork* (global party data)
+    private const int UnitId = 0x8, UnitPersonaEquip = 0x48;
     // UBtlCoreComponent
     private const int CorePlayers = 0x2F8, CoreEnemies = 0x308;
     // ABtlAI
@@ -73,7 +77,8 @@ public unsafe class BattleHooks
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
     private delegate void ResizeForCopyNative(nint array, int newMax, int prevMax);
 
-    private record Command(int Battle, int Turn, string Slot, byte Type, int Id, string[] Targets);
+    // Persona = the commander's equipped Persona stock index when it acted (MC can switch Personas in battle), -1 = n/a
+    private record Command(int Battle, int Turn, string Slot, byte Type, int Id, string[] Targets, int Persona = -1);
 
     private readonly CoopLog _log;
     private readonly string _dir;
@@ -87,6 +92,7 @@ public unsafe class BattleHooks
     private long _arrivedAt;                   // when the held turn's command arrived (0 = not yet)
     private readonly SetCommandTargetsNative _setCommandTargets;
     private readonly ResizeForCopyNative _resizeForCopy;
+    private readonly delegate* unmanaged<ushort, short, byte> _setPersonaEquip;
 
     private nint _core;                 // BtlCoreComponent of the current battle
     private int _battle, _turn;
@@ -111,7 +117,7 @@ public unsafe class BattleHooks
         _dir = runDir;
         _session = session;
         _encounter = encounter;
-        _party = new PartySync(log, session, () => _inBattle);
+        _party = new PartySync(log, session, runDir, () => _inBattle);
         _testSeed = battleRngTestSeed;
         if (_testSeed != 0) BattleRng.Arm(_testSeed);   // one-PC test: every battle uses this seed
         Directory.CreateDirectory(runDir);
@@ -125,6 +131,7 @@ public unsafe class BattleHooks
         _worldTick = hooks.CreateHook<WorldTickFn>(WorldTickImpl, exe + RvaWorldTick).Activate();
         _setCommandTargets = Marshal.GetDelegateForFunctionPointer<SetCommandTargetsNative>((nint)(exe + RvaSetCommandTargets));
         _resizeForCopy = Marshal.GetDelegateForFunctionPointer<ResizeForCopyNative>((nint)(exe + RvaResizeForCopy));
+        _setPersonaEquip = (delegate* unmanaged<ushort, short, byte>)(exe + RvaSetPersonaEquip);
         new Thread(WatchRemote) { IsBackground = true, Name = "coop-battle-remote" }.Start();
         log.Info("Battle hooks on (SetCommand, DoCommand, world-tick release, remote relay)");
     }
@@ -231,7 +238,7 @@ public unsafe class BattleHooks
             if (resumed) { _waiting = null; _heldAm = 0; Delete("cmd_request.txt"); }
             LogCmd("DoCommand", am, commander, slot, resumed ? " (held turn, played here)" : "");
             if (slot.StartsWith('P') && _remote.Count > 0)
-                Append("local_cmds.txt", $"{_battle} {_turn} {slot} {CommandType(am, commander)} {*(int*)(am + AmId)} {Targets(commander, am + AmTargets)}");
+                Append("local_cmds.txt", $"{_battle} {_turn} {slot} {CommandType(am, commander)} {*(int*)(am + AmId)} {Targets(commander, am + AmTargets)}{PersonaField(commander)}");
             return true;
         }
 
@@ -246,6 +253,7 @@ public unsafe class BattleHooks
 
         if (_received.TryRemove((_battle, _turn), out var cmd))
         {
+            if (cmd.Persona >= 0) MatchPersona(commander, slot, cmd.Persona);
             Apply(am, commander, cmd.Type, cmd.Id, cmd.Targets);
             _waiting = null;
             _heldAm = 0;
@@ -304,7 +312,8 @@ public unsafe class BattleHooks
                 {
                     var f = line.Split(' ', StringSplitOptions.RemoveEmptyEntries);
                     if (f.Length < 6 || !int.TryParse(f[0], out var b) || !int.TryParse(f[1], out var n)) continue;
-                    var cmd = new Command(b, n, f[2], byte.Parse(f[3]), int.Parse(f[4]), f[5] == "-" ? Array.Empty<string>() : f[5].Split(','));
+                    var persona = f.Length > 6 && f[6].StartsWith('p') && int.TryParse(f[6][1..], out var pi) ? pi : -1;
+                    var cmd = new Command(b, n, f[2], byte.Parse(f[3]), int.Parse(f[4]), f[5] == "-" ? Array.Empty<string>() : f[5].Split(','), persona);
                     _received[(b, n)] = cmd;
                     _log.Quiet($"remote cmd b{b} n{n} {cmd.Slot} type={cmd.Type} id={cmd.Id} targets={f[5]}");
                 }
@@ -341,6 +350,25 @@ public unsafe class BattleHooks
     // Write a command the way the game does: SetCommand (type/id) + SetCommandTargets with a temporary TArray —
     // the game copies it into the action manager with its own allocator. (Rewriting the manager's TArray in
     // place could leave an attack with zero targets when the local pick had none -> crash, 2026-10-04.)
+    // MC (character 1) can switch Personas during his turn: send the equipped stock index with his command.
+    private static string PersonaField(nint commander)
+    {
+        var unit = *(nint*)(commander + ActorUnit);
+        return unit != 0 && *(ushort*)(unit + UnitId) == 1 ? $" p{*(short*)(unit + UnitPersonaEquip)}" : "";
+    }
+
+    // Before the partner's MC command runs here: equip the Persona the partner's MC acted with (same stock - the
+    // stock itself is synced outside battles by PartySync).
+    private void MatchPersona(nint commander, string slot, int index)
+    {
+        var unit = *(nint*)(commander + ActorUnit);
+        if (unit == 0) return;
+        var mine = *(short*)(unit + UnitPersonaEquip);
+        if (mine == index) return;
+        var ok = _setPersonaEquip(*(ushort*)(unit + UnitId), (short)index);
+        _log.Info($"Battle {_battle}: {slot} Persona {mine} -> {index}" + (ok != 0 ? "" : " (REFUSED: stock slot empty here)"));
+    }
+
     // A Theurgia reaches the action manager as an ordinary skill (type 2, its skill id); only the unit's AI
     // decision says type 11 (seen 2026-10-05: Akihiko 282, MC 260). Relay 11 so the other game marks it too.
     private static byte CommandType(nint am, nint commander)

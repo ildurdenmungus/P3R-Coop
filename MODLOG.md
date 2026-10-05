@@ -296,7 +296,7 @@ Launch: `Reloaded-II.exe --launch "D:\...\P3R.exe"`. Only one P3R at a time (a 2
   fake USERPROFILE/APPDATA: OK. Dev PC host launcher: `Host co-op.bat` in the repo root.
 - Paths are now %USERPROFILE%\P3R-Coop\{run,recon} everywhere (Lua, mod config default, link).
 - F8 (Lua keybind) -> boss_solo.txt -> a held boss starts without waiting.
-- **Still open:** real Fuuka-prompt boss flow under the hold (couldn't trigger the prompt by keys this
+- (superseded below) **Still open:** real Fuuka-prompt boss flow under the hold (couldn't trigger the prompt by keys this
   session); MC Persona changes are not synced (guest's MC keeps its Persona -> damage can differ -> DESYNC ->
   solo fallback); the guest's own pawn is still the MC model; first real two-PC test.
 
@@ -369,3 +369,31 @@ Hook pattern: `IStartupScanner.AddMainModuleScan(sig)` → `IReloadedHooks.Creat
 
 ## Log
 - 2026-10-04: recon done, design chosen, waiting on OK to install Reloaded-II + back up saves.
+
+### Boss wait v2, MC Persona, guest look (2026-10-05 night)
+- **Guest look: WORKS.** Pawns are built from `AppCharacterComp` (ABP_AppCharacter_C +0x930): CategoryID 1,
+  IndexID = character id (player 1 = MC, costume -1; partners e.g. 4/3/2, costume 0). `SetIndexID(id)`,
+  `SetCostumeID(c)`, `SetCostume()` re-dress a pawn live (walk anims fine). P3RCoop.lua (guest role): our pawn
+  takes the look of party slot 2 (party.txt from PartySync = ActiveCharacters), that partner pawn becomes MC
+  and is the host's ghost; host role: the guest leader's pawn is the ghost. Restored when the role goes away.
+  `K2_GetComponentsByClass` returns a Lua table in this UE4SS (ghost take_over fixed).
+- **MC Persona: WORKS (bot tests).** Battle actor +0x328 = its FDatUnitWork (global data). UBtlDataBaseComponent::
+  SetPersonaStockEquip (+0x1040B40) = SetEquip(+0x12044E0)(charId, index): unit = +0x122B3A0(gw, id), stock slot
+  i valid if byte unit+0x4C+i*0x30 bit 0, equip = ushort unit+0x48. MC's relayed commands carry ` p<index>`
+  (host sent "4 7 P0 1 0 E0 p1"); the receiving game calls SetEquip first ("P0 Persona 0 -> 1"). Outside
+  battles the host sends MC's whole Persona block (0x244 bytes at unit+0x48) as `MCPERSONA <hex>`.
+- **Boss (Adamah 246):** strike code (+0x11259A9) = RequestEncount(reason 2/3/4) with no boss check; a strike-
+  or forced request on the Gatekeeper starts encounter 1 directly (no prompt) -> Fuuka's prompt + encounter 838
+  are started by the boss/event side (UFldEnemyUniqueComp state 4, BP_DEVT_RefActor_C on the boss, an
+  FldHitActorBOX at (0,-5000)). Keyboard Ctrl/LMB never reached the game's attack this session (behavior stayed
+  1); forcing FldPlayerDungeonComp.NextBehavior = 7 crashed the game.
+- **Boss wait v2: WORKS (gate tested, prompt not).** P3RCoop.lua: while co-op is on, a Gatekeeper and the model
+  actors on it (BP_Em0093_003_C, BP_Em0062_003_C) get collision OFF until the partner's network position is within
+  1500 of it (same floor, fresh <2 s); F8 = open for 2 min. EncounterSync: Gatekeeper requests are not announced
+  (prompt may say "not ready"); any battle reaching PreLoad unannounced is announced there (BATTLE id seed 5
+  bossId encount + PARAM) -> verified: partner joined. The request hold (HoldBoss/READY) is no longer used.
+- **Crash pattern:** coreclr.dll+0x2E4FF2 with BattleHooks.WorldTickImpl on the stack = a native fault anywhere
+  inside the world tick (our hook wraps it) - here from the forced NextBehavior and from a UE4SS Lua property read
+  on FldHitActorBOX. Not a bug in the hook itself; avoid poking those objects.
+- To verify by hand in real play: strike the boss with the partner far away (nothing should happen), then with
+  the partner next to it (prompt -> "Пошли" -> both games in the boss fight).

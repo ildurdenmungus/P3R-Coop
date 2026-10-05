@@ -20,9 +20,9 @@ namespace p3rpc.coop;
 /// If the partner can't join (in a menu for 20 s, own battle, no Shadow on its floor), the starter's battle is
 /// "solo": the starter's player commands all four.
 ///
-/// Boss wait: a Gatekeeper's encounter request is held ("READY enemyId" to the partner) until the partner's game
-/// has asked for the same boss too. Then the host's game starts the battle and the guest's game joins it with its
-/// own held request.
+/// Boss wait: the Lua field script keeps a Gatekeeper untouchable until the partner is near it too (Block Tales:
+/// everyone at the boss). Its battle starts through Fuuka's prompt, not always through RequestEncount, so battles
+/// that reach PreLoad unannounced are announced there. (HoldBoss/READY below = the earlier request-hold design.)
 /// </summary>
 public unsafe class EncounterSync
 {
@@ -104,6 +104,7 @@ public unsafe class EncounterSync
     private BossHold? _boss;
     private volatile int _partnerReadyAt = -1;
     private bool _releasing;
+    private int _bossEnemyId = -1;                         // Gatekeeper asked for, battle not announced yet
 
     public Battle? Current => _current;
 
@@ -131,9 +132,16 @@ public unsafe class EncounterSync
 
     private void RequestEncountImpl(nint mgr, nint holder, int reason)
     {
+        try
+        {
+            var c = *(nint*)(holder + 8);
+            if (c != 0) _log.Quiet($"RequestEncount reason {reason}: Shadow id {*(int*)(c + CompId)} type {*(byte*)(c + CompType)}");
+        }
+        catch { }
         // The partner's battle is about to start here: a Shadow touched meanwhile would start a second one.
         if (_join != null) { _log.Info($"local encounter (reason {reason}) ignored: joining the partner's battle"); return; }
-        if (!_releasing && HoldBoss(holder, reason)) return;
+        // (Boss wait is done in the field script now: a Gatekeeper can't be touched until both players are near
+        // it. HoldBoss stays for reference; holding the request itself skipped Fuuka's prompt script.)
 
         var before0 = *(nint*)(mgr + MgrRequest);
         _requestEncount.OriginalFunction(mgr, holder, reason);
@@ -150,6 +158,14 @@ public unsafe class EncounterSync
             _log.Info($"encounter requested: reason {reason}, Shadow id {enemyId} type {type} encount {encount}");
 
             if (!_session.Connected) return;                     // playing alone: an ordinary battle
+            if (type == Gatekeeper)
+            {
+                // A strike on a boss only opens Fuuka's "ready?" prompt; "not ready" cancels it. Announce the battle
+                // when it really loads (PreLoad), not now.
+                _bossEnemyId = enemyId;
+                _log.Info($"boss Shadow {enemyId}: waiting for the prompt answer");
+                return;
+            }
             var b = new Battle { Id = NewId(), Seed = NewSeed(), Starter = true, StartedAt = Environment.TickCount64 };
             lock (_lock) _current = b;
             BattleRng.Arm(b.Seed);
@@ -171,6 +187,17 @@ public unsafe class EncounterSync
         try
         {
             var b = _current;
+            // A battle that did not come through RequestEncount (Fuuka's boss prompt, events): announce it here,
+            // before anything is loaded or rolled, so the partner joins with exactly this encounter.
+            if (b == null && where == "PreLoad" && _session.Connected && _join == null)
+            {
+                b = new Battle { Id = NewId(), Seed = NewSeed(), Starter = true, StartedAt = Environment.TickCount64 };
+                lock (_lock) _current = b;
+                BattleRng.Arm(b.Seed);
+                _session.Send($"BATTLE {b.Id} {b.Seed} 5 {_bossEnemyId} {*(int*)param}");
+                _bossEnemyId = -1;
+                _log.Info($"battle {b.Id} started without an encounter request (encount {*(int*)param}): announced at PreLoad");
+            }
             if (b != null) b.Loaded = true;
             if (b != null && b.Starter && !b.ParamDone)
             {
@@ -353,27 +380,50 @@ public unsafe class EncounterSync
     private void EnemyForceEncountImpl(nint enemyMgr)
     {
         var j = _join;
-        if (j == null) { _enemyForceEncount.OriginalFunction(enemyMgr); return; }
+        if (j == null)
+        {
+            // Dev test (no keyboard strike possible from outside): debug_reason.txt = "2" makes this call request a
+            // battle with the first usable Shadow as a player strike, through our hook like the real strike code.
+            var dbg = Path.Combine(_dir, "debug_reason.txt");
+            if (File.Exists(dbg) && int.TryParse(File.ReadAllText(dbg).Trim(), out var reason))
+            {
+                File.Delete(dbg);
+                var h = FirstUsable(enemyMgr, -1);
+                _log.Info($"debug: strike request (reason {reason}) on {(h == 0 ? "nothing" : "Shadow id " + *(int*)(*(nint*)(h + 8) + CompId))}");
+                if (h != 0) RequestEncountImpl(_getFieldManager(), h, reason);
+                return;
+            }
+            _enemyForceEncount.OriginalFunction(enemyMgr);
+            return;
+        }
         try
         {
-            var data = *(nint*)(enemyMgr + EnemyArray);
-            var num = *(int*)(enemyMgr + EnemyArray + 8);
-            nint pick = 0;
-            for (int i = 0; i < num && i < 256; i++)
-            {
-                var h = data + i * 16;
-                var obj = _holderObject(h);
-                if (obj == 0 || *(nint*)(h + 8) == 0) continue;
-                var vt = *(nint**)obj;
-                if (((delegate* unmanaged<nint, byte>)vt[0x4B8 / 8])(obj) != 0) continue;   // not usable (ForceEncount's own test)
-                if (pick == 0) pick = h;
-                if (*(int*)(*(nint*)(h + 8) + CompId) == j.EnemyId) { pick = h; break; }
-            }
+            var pick = FirstUsable(enemyMgr, j.EnemyId);
             if (pick == 0) { _log.Info($"join {j.Id}: no usable Shadow on this floor"); return; }
 
             JoinWith(_getFieldManager(), j, pick);
         }
         catch (Exception e) { _log.Error("ForceEncount hook: " + e.Message); }
+    }
+
+    // The Shadow with this spawn id, else the first usable one (ForceEncount's own test: resolved holder object's
+    // vfunc +0x4B8 returns false).
+    private nint FirstUsable(nint enemyMgr, int wantedId)
+    {
+        var data = *(nint*)(enemyMgr + EnemyArray);
+        var num = *(int*)(enemyMgr + EnemyArray + 8);
+        nint pick = 0;
+        for (int i = 0; i < num && i < 256; i++)
+        {
+            var h = data + i * 16;
+            var obj = _holderObject(h);
+            if (obj == 0 || *(nint*)(h + 8) == 0) continue;
+            var vt = *(nint**)obj;
+            if (((delegate* unmanaged<nint, byte>)vt[0x4B8 / 8])(obj) != 0) continue;
+            if (pick == 0) pick = h;
+            if (*(int*)(*(nint*)(h + 8) + CompId) == wantedId) return h;
+        }
+        return pick;
     }
 
     /// <summary>The battle is over on this game (Lua battle_end.txt).</summary>

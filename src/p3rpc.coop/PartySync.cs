@@ -26,9 +26,17 @@ public unsafe class PartySync
     private string? _lastSent;
     private long _diagAt = -60000;
     private volatile string[]? _pending;               // latest HPSP from the partner, applied on the game thread
+    private volatile string? _pendingPersona;          // guest: the host's MC Persona block (hex), applied likewise
+    private string? _lastPersona;
+    private string? _lastOrder;
+    private readonly string _runDir;
+    private long _lastPersonaSent;
+    // FDatUnitPersona = ushort equip + 12 stock entries of 0x30 (MC's Personas: ids, levels, skills, stats)
+    private const int UnitPersona = 0x48, PersonaSize = 0x244;
 
-    public PartySync(CoopLog log, Session session, Func<bool> inBattle)
+    public PartySync(CoopLog log, Session session, string runDir, Func<bool> inBattle)
     {
+        _runDir = runDir;
         _log = log;
         _session = session;
         _inBattle = inBattle;
@@ -38,6 +46,7 @@ public unsafe class PartySync
     public void OnMessage(string[] f)
     {
         if (f[0] == "HPSP") _pending = f;
+        if (f[0] == "MCPERSONA" && f.Length > 1) _pendingPersona = f[1];
     }
 
     /// <summary>Game thread, every frame (UWorld::Tick hook).</summary>
@@ -60,6 +69,36 @@ public unsafe class PartySync
                 *(int*)(unit + UnitHp) = int.Parse(p[i + 1]);
                 *(int*)(unit + UnitSp) = int.Parse(p[i + 2]);
             }
+        }
+
+        // MC's Personas belong to the host (fusions, levels, the equipped one): the guest copies them.
+        if (_pendingPersona is { } hex && _session.MyRole == Session.Role.Guest && UnitById(1) is var mc && mc != 0)
+        {
+            _pendingPersona = null;
+            var bytes = Convert.FromHexString(hex);
+            if (bytes.Length == PersonaSize)
+            {
+                fixed (byte* src = bytes) Buffer.MemoryCopy(src, (void*)(mc + UnitPersona), PersonaSize, PersonaSize);
+                _log.Info($"PartySync: MC Personas copied from the host (equipped slot {*(short*)(mc + UnitPersona)})");
+            }
+        }
+        if (_session.MyRole == Session.Role.Host && UnitById(1) is var hmc && hmc != 0)
+        {
+            var block = Convert.ToHexString(new ReadOnlySpan<byte>((void*)(hmc + UnitPersona), PersonaSize));
+            if (block != _lastPersona || now - _lastPersonaSent > 10000)    // resend now and then: a late guest
+            {
+                _lastPersona = block;
+                _lastPersonaSent = now;
+                _session.Send("MCPERSONA " + block, quiet: true);
+            }
+        }
+
+        // Party order for the Lua field script (the guest's own pawn takes the look of party slot 2).
+        var order = string.Join(" ", Enumerable.Range(0, 4).Select(i => *(ushort*)(_gw + Active + i * 2)));
+        if (order != _lastOrder)
+        {
+            _lastOrder = order;
+            try { File.WriteAllText(Path.Combine(_runDir, "party.txt"), order); } catch { }
         }
 
         var own = _session.MyRole == Session.Role.Guest ? new[] { 2, 3 } : new[] { 0, 1 };

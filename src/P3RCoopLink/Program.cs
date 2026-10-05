@@ -179,7 +179,8 @@ async Task Bot(string role)
                 var c = File.ReadAllText(botCmd).Trim().Split(' ');
                 File.Delete(botCmd);
                 if (c[0] == "role" && c.Length > 1) { role = c[1]; WritePeer(role, true); Status($"our game is now the {role}"); }
-                if (c[0] == "next" && c.Length > 4) { nextSlot = c[1]; nextAnswer = $"{c[2]} {c[3]} {c[4]}"; Status($"next {nextSlot} answer: {nextAnswer}"); }
+                if (c[0] == "ready" && c.Length > 1) { File.AppendAllText(netIn, $"READY {c[1]}" + Environment.NewLine); Status($"partner is at boss {c[1]}"); }
+                if (c[0] == "next" && c.Length > 4) { nextSlot = c[1]; nextAnswer = string.Join(' ', c[2..]); Status($"next {nextSlot} answer: {nextAnswer}"); }
                 if (c[0] == "start" && c.Length > 1)
                 {
                     var id = nextId++;
