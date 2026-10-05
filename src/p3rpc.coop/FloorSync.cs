@@ -61,11 +61,11 @@ public unsafe class FloorSync
             var fields = $"{w[0]} {w[1]} {w[2]} {w[3]} {w[4]} {w[5]} {w[6]} {w[7]}";
             if (_sessionSeed != 0 && _session.Connected)
             {
-                // The setup (+0x119EE60) copies words +0 and +8 next to the seed (ctx+0x490E / +0x1A1A): those identify
-                // the floor. (The rest of the block can be stack junk; +0x10 is a pointer.)
+                // Floor-defining words (2026-10-06, friend's save, Thebel): 23F = [91 seed 1798 22 0 2570 0 0] on both
+                // visits (only the seed re-rolls), 24F = [91 seed 1284 20 0 2570 0 0]. Word 0 = block, words 2/3 =
+                // size / piece count, 4/5 more floor data; words 0+4 alone gave 23F and 24F the same seed.
                 ulong x = _sessionSeed;
-                x = (x ^ w[0]) * 0x100000001B3UL;
-                x = (x ^ w[4]) * 0x100000001B3UL;
+                foreach (var i in new[] { 0, 2, 3, 4, 5 }) x = (x ^ w[i]) * 0x100000001B3UL;
                 x ^= x >> 29;
                 var seed = (ushort)(x ^ (x >> 16) ^ (x >> 32));
                 _log.Info($"floor layout: params [{fields}] seed {w[1]} -> {seed} (shared)");

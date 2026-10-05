@@ -422,3 +422,16 @@ Hook pattern: `IStartupScanner.AddMainModuleScan(sig)` → `IReloadedHooks.Creat
   leader while we pushed it. Now `a.FldPartnerComp:SetComponentTickEnabled(false)` + controller StopMovement.
   Position exchange 20 -> ~30 Hz (Lua tick 33 ms, link send 33 ms); the ghost aims at an extrapolated position
   (velocity from the last two samples x ticks since, max 6).
+
+### Solo checks after the first session (2026-10-06 00:50-01:12)
+- **Ghost movement (mirror partner, 0.25 s late +250 X): FIXED.** "partner follow logic off (FldPartnerComp)";
+  tracking after the initial snap: avg 84-127 units, max ~250, 0 snaps, ~28 steer samples/s.
+- The launcher loaded the friend's save (slot 16 = newest file): **a save from another Steam account loads fine**
+  (Thebel 21F, 10.05, MC + Yukari + Junpei).
+- **3-member party crash: FIXED** (host role, remote "P2,P3"): "P3 not in this party (3 members), skipped",
+  Junpei automatic before the first turn, battle won, partner turns held/answered.
+- **Floors really re-roll per visit:** 23F native seed 9355 on the first visit, 22834 on the second (params
+  [91 seed 1798 22 0 2570 0 0]) -> two games build different floors. With the shared seed both visits gave the
+  same layout (fingerprint e525ae35). 24F = [91 seed 1284 20 0 2570 0 0]: hashing words 0+4 gave 23F/24F the same
+  seed -> now words 0,2,3,4,5 (seeds 31272 / 15123 in the check run). Layout params are per-floor constants
+  except word 1.
