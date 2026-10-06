@@ -41,18 +41,25 @@ public class Session
         return MyRole == Role.Guest ? new HashSet<string> { "P0", "P1" } : new HashSet<string> { "P2", "P3" };
     }
 
-    /// <summary>remote_slots.txt: one-PC tests without a partner game.</summary>
+    /// <summary>remote_slots.txt: one-PC tests without a partner game. Cached for a second: IsRemote() asks every
+    /// frame while a partner turn is held, and a disk read per frame made the battle camera stutter.</summary>
     public HashSet<string> TestSlots()
     {
+        var now = Environment.TickCount64;
+        if (_testSlots != null && now - _testSlotsAt < 1000) return _testSlots;
+        _testSlotsAt = now;
         try
         {
             var path = Path.Combine(_dir, "remote_slots.txt");
-            return File.Exists(path)
+            _testSlots = File.Exists(path)
                 ? File.ReadAllText(path).Split(new[] { ',', ' ', '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries).ToHashSet()
                 : new HashSet<string>();
         }
-        catch { return new HashSet<string>(); }
+        catch { _testSlots = new HashSet<string>(); }
+        return _testSlots;
     }
+    private HashSet<string>? _testSlots;
+    private long _testSlotsAt;
 
     public void Send(string line, bool quiet = false)
     {
@@ -81,7 +88,7 @@ public class Session
             {
                 var f = line.Trim().Split(' ', StringSplitOptions.RemoveEmptyEntries);
                 if (f.Length == 0) continue;
-                if (f[0] is "HPSP" or "MCPERSONA" or "FLOORSEED") _log.Quiet("net <- " + line.Trim()); else _log.Info("net <- " + line.Trim());
+                if (f[0] is "HPSP" or "MCPERSONA" or "FLOORSEED" or "SHUFFLECUR") _log.Quiet("net <- " + line.Trim()); else _log.Info("net <- " + line.Trim());
                 list.Add(f);
             }
         }

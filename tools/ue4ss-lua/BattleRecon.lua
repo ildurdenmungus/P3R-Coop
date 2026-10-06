@@ -102,11 +102,65 @@ local function coop_battle_start()
     if rf then rf:write(id); rf:close() end
 end
 
+-- Shuffle Time (card choice after some battles): the host chooses. Host: cursor moves -> "SHUFFLECUR i", the
+-- chosen card -> "SHUFFLEPICK i" (lua_out.txt, sent by the link). Guest: shuffle.txt ("cur i" / "pick i", from the
+-- C# side) puts our cursor on the host's card. Everything seen is logged (first real use, 2026-10-07).
+local SHUFFLE_CLASSES = { "BtlShuffleMainBase", "BP_BtlShuffleMain_C", "BP_BtlShuffle_C", "BtlShuffleMain" }
+local shuffle, shuffle_seen, shuffle_next, shuffle_last = nil, nil, 0, nil
+local function role()
+    local f = io.open(RUN .. "peer.txt", "r")
+    if not f then return nil end
+    local r, up = (f:read("*l") or ""):match("^(%a+)%s+(%d)"); f:close()
+    return up == "1" and r or nil
+end
+local function send(line)
+    local f = io.open(RUN .. "lua_out.txt", "a")
+    if f then f:write(line .. "\n"); f:close() end
+end
+local function shuffle_sync()
+    if not valid(shuffle) then
+        if os.clock() < shuffle_next then return end
+        shuffle_next = os.clock() + 1                 -- FindFirstOf scans every object: once a second at most
+        for _, c in ipairs(SHUFFLE_CLASSES) do
+            local s = FindFirstOf(c)
+            if valid(s) then shuffle = s; log("  SHUFFLE found " .. cls(s)); break end
+        end
+        if not valid(shuffle) then return end
+    end
+    local ok, cur, pick, n, en = pcall(function()
+        return shuffle.SelectCoursorIndex, shuffle.ActionCardIndex, shuffle.SelectedCardNum, shuffle.EnableSelectNum
+    end)
+    if not ok then return end
+    local state = string.format("cursor=%s action=%s selected=%s enable=%s", tostring(cur), tostring(pick), tostring(n), tostring(en))
+    if state ~= shuffle_seen then
+        shuffle_seen = state
+        log("  SHUFFLE " .. state)
+        local r = role()
+        if r == "host" then
+            send("SHUFFLECUR " .. tostring(cur))
+            if n and n > 0 then send("SHUFFLEPICK " .. tostring(cur)) end
+        end
+    end
+    if role() == "guest" then
+        local f = io.open(RUN .. "shuffle.txt", "r")
+        if f then
+            local what, idx = (f:read("*l") or ""):match("^(%a+)%s+(%-?%d+)"); f:close()
+            idx = tonumber(idx)
+            if idx and idx >= 0 and cur ~= idx then
+                pcall(function() shuffle.SelectCoursorIndex = idx end)
+                log("  SHUFFLE guest cursor -> host's card " .. idx .. " (" .. tostring(what) .. ")")
+            end
+        end
+    end
+end
+
 local function poll()
     if not valid(core) then
         if last_turn then
             log("battle over / no core"); last_turn, last_ai, last_am = nil, nil, nil
             coop_done = nil
+            _G.P3RCOOP_BATTLE_ENDS = (_G.P3RCOOP_BATTLE_ENDS or 0) + 1   -- P3RCoop.lua re-dresses the pawns
+            shuffle, shuffle_seen = nil, nil
             local f = io.open(RUN .. "battle_end.txt", "w"); if f then f:write(os.date("%H:%M:%S")); f:close() end
         end
         -- FindFirstOf scans every UObject: outside battles only look again every 2 s
@@ -117,6 +171,8 @@ local function poll()
         if not valid(core) then return end
     end
     coop_battle_start()
+    local ok_s, err_s = pcall(shuffle_sync)
+    if not ok_s then log("  SHUFFLE error " .. tostring(err_s)) end
     local cur = core.CurrentAction
     local turn = name(cur)
     if turn ~= last_turn then

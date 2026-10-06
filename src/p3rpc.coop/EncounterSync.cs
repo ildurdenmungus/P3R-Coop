@@ -189,16 +189,25 @@ public unsafe class EncounterSync
         try
         {
             var b = _current;
+            // A battle starts here while the partner's battle is pending (both touched the boss): this battle becomes
+            // the partner's - same id, seed and encounter - instead of a second, separate one.
+            if (b == null && _join is { } pj)
+            {
+                b = new Battle { Id = pj.Id, Seed = pj.Seed, Starter = false, Param = pj.Param, EncountId = pj.EncountId, StartedAt = Environment.TickCount64 };
+                lock (_lock) { _current = b; _join = null; }
+                BattleRng.Arm(pj.Seed);
+                _log.Info($"{where}: our own battle start adopted as the partner's battle {pj.Id}");
+            }
             // A battle that did not come through RequestEncount (Fuuka's boss prompt, events): announce it here,
             // before anything is loaded or rolled, so the partner joins with exactly this encounter.
-            if (b == null && where == "PreLoad" && _session.Connected && _join == null)
+            if (b == null && _session.Connected && _join == null)
             {
                 b = new Battle { Id = NewId(), Seed = NewSeed(), Starter = true, StartedAt = Environment.TickCount64 };
                 lock (_lock) _current = b;
                 BattleRng.Arm(b.Seed);
                 _session.Send($"BATTLE {b.Id} {b.Seed} 5 {_bossEnemyId} {*(int*)param}");
                 _bossEnemyId = -1;
-                _log.Info($"battle {b.Id} started without an encounter request (encount {*(int*)param}): announced at PreLoad");
+                _log.Info($"battle {b.Id} started without an encounter request (encount {*(int*)param}): announced at {where}");
             }
             if (b != null)
             {

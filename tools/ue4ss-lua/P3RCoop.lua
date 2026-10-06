@@ -88,6 +88,7 @@ end
 -- Guest only: swap looks between our pawn (MC) and the leader's partner pawn. Checked every 2 s (new floors
 -- spawn fresh pawns); undone if the partner goes away.
 local swapped = false
+local dressed_at = -1                     -- battle count (BattleRecon) when the looks were last applied
 local function set_look(c, id, costume)
     c:SetIndexID(id); c:SetCostumeID(costume); c:SetCostume()
 end
@@ -97,6 +98,18 @@ local function update_looks()
     if not pc then return end
     local leader = guest_leader()
     local want = coop_role() == "guest" and leader ~= nil
+    -- After a battle the game re-dresses the field pawns from the party data without changing IndexID (2026-10-07:
+    -- "after one battle the guest looked like the host"): apply the looks again after every battle.
+    local battles = _G.P3RCOOP_BATTLE_ENDS or 0
+    if want and swapped and pc.IndexID ~= MC and dressed_at ~= battles then
+        local other = partner_with(MC) or partner_with(leader)
+        set_look(pc, leader, 0)
+        if other and char_comp(other) then set_look(char_comp(other), MC, -1) end
+        dressed_at = battles
+        ghost = nil
+        log("looks applied again after a battle")
+        return
+    end
     if want and pc.IndexID == MC then
         local other = partner_with(leader)
         local oc = other and char_comp(other)
@@ -105,6 +118,7 @@ local function update_looks()
         set_look(pc, leader, other_costume)
         set_look(oc, MC, my_costume)
         swapped = true
+        dressed_at = _G.P3RCOOP_BATTLE_ENDS or 0
         ghost = nil                                   -- pick the (now MC-looking) ghost again
         log(string.format("looks swapped: we are character %d, the host is shown on %s", leader, other:GetFName():ToString()))
     elseif not want and swapped and pc.IndexID ~= MC then
@@ -231,6 +245,17 @@ local function boss_gate()
                         end
                     end
                 end
+                -- The collision gate alone did not stop the boss fight (2026-10-07): also switch off the event/trigger
+                -- boxes around the boss (FldHitActor*, BP_DEVT_*) while waiting.
+                for _, tcls in ipairs({ "FldHitActorBOX", "FldHitActor", "BP_DEVT_RefActor_C" }) do
+                    for _, t in ipairs(FindAllOf(tcls) or {}) do
+                        pcall(function()
+                            local tl = t:K2_GetActorLocation()
+                            local dx, dy = tl.X - l.X, tl.Y - l.Y
+                            if dx * dx + dy * dy < 3000 * 3000 then t:SetActorEnableCollision(allow) end
+                        end)
+                    end
+                end
                 log("boss " .. key .. (allow and ": can be fought now" or ": waiting for the partner to come here (F8 = fight now)"))
             end
         end
@@ -301,6 +326,9 @@ local function take_over(a)
         end
     end)
     if not ok then log("ghost: no FldPartnerComp") end
+    -- The ghost is moved directly (see steer); its own movement component would fight that, but its Velocity is
+    -- what the animation reads, so it stays as a value holder with its tick off.
+    pcall(function() a.CharacterMovement:SetComponentTickEnabled(false); log("ghost: movement component off") end)
     local ctrl = a.Controller
     if ctrl and ctrl:IsValid() then
         pcall(function() ctrl:StopMovement() end)
@@ -342,16 +370,23 @@ local function steer()
         err_snaps = err_snaps + 1
         ghost:K2_SetActorLocation({ X = target.X, Y = target.Y, Z = target.Z }, false, {}, true)
         ghost:K2_SetActorRotation({ Pitch = 0, Yaw = target.Yaw, Roll = 0 }, true)
-    elseif dist > ARRIVE_DISTANCE then
-        local scale = math.min(1.0, dist / 300)          -- slow down when close: walk, not sprint, into place
-        ghost:AddMovementInput({ X = dx / dist, Y = dy / dist, Z = 0 }, scale, true)   -- plays the run animation
-        if dist > PULL_DISTANCE then
-            local k = 0.2                                 -- close a fifth of the gap per step (~30 Hz)
-            ghost:K2_SetActorLocation({ X = cur.X + dx * k, Y = cur.Y + dy * k, Z = cur.Z }, false, {}, true)
-        end
-    else
-        ghost:K2_SetActorRotation({ Pitch = 0, Yaw = target.Yaw, Roll = 0 }, true)
+        return
     end
+    -- Glide toward the (predicted) position: a third of the gap per step (~30 Hz) - smooth, catches up in ~0.2 s.
+    -- (AddMovementInput did not move the taken-over pawn: it slid along ~200 units behind, 2026-10-07 session.)
+    local k = 0.35
+    local nx, ny = cur.X + dx * k, cur.Y + dy * k
+    local nz = cur.Z + (target.Z - cur.Z) * k
+    ghost:K2_SetActorLocation({ X = nx, Y = ny, Z = nz }, false, {}, true)
+    -- Animation speed comes from the movement component's Velocity (units/s, one step = 1/30 s).
+    local vx, vy = (nx - cur.X) * 30, (ny - cur.Y) * 30
+    pcall(function() ghost.CharacterMovement.Velocity = { X = vx, Y = vy, Z = 0 } end)
+    -- Face where it walks; standing still, turn to the partner's own facing.
+    local yaw
+    if vx * vx + vy * vy > 60 * 60 then yaw = math.deg(math.atan(vy, vx)) else yaw = target.Yaw end
+    local r = ghost:K2_GetActorRotation()
+    local dyaw = (yaw - r.Yaw + 540) % 360 - 180
+    ghost:K2_SetActorRotation({ Pitch = 0, Yaw = r.Yaw + dyaw * 0.3, Roll = 0 }, true)
 end
 
 LoopAsync(TICK_MS, function()

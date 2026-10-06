@@ -117,6 +117,7 @@ public unsafe class BattleHooks
     private HashSet<string> _remote = new();          // partner's slots in the current battle
 
     private readonly FloorSync? _floors;
+    private readonly ItemSync _items;
 
     public BattleHooks(IReloadedHooks hooks, CoopLog log, string runDir, Session session, EncounterSync encounter, uint battleRngTestSeed = 0, bool syncFloors = true)
     {
@@ -126,11 +127,13 @@ public unsafe class BattleHooks
         _encounter = encounter;
         _party = new PartySync(log, session, runDir, () => _inBattle);
         _floors = syncFloors ? new FloorSync(hooks, log, session) : null;
+        _items = new ItemSync(log, session, () => _inBattle);
         _testSeed = battleRngTestSeed;
         if (_testSeed != 0) BattleRng.Arm(_testSeed);   // one-PC test: every battle uses this seed
         Directory.CreateDirectory(runDir);
         Delete("kick.txt"); Delete("battle_end.txt"); Delete("cmd_request.txt"); Delete("remote_cmds.txt"); Delete("local_cmds.txt");   // stale commands from an earlier session would be replayed
         Delete("battle_coop.txt");
+        Delete("shuffle.txt");
 
         var exe = (long)Process.GetCurrentProcess().MainModule!.BaseAddress;
         _setCommand = hooks.CreateHook<SetCommandFn>(SetCommandImpl, exe + RvaSetCommand).Activate();
@@ -153,6 +156,7 @@ public unsafe class BattleHooks
         {
             _encounter.Tick();
             _party.Tick();
+            _items.Tick();
             if (_startHeldAm != 0)
             {
                 var sb = _encounter.Current;
@@ -205,6 +209,7 @@ public unsafe class BattleHooks
         var test = _session.TestSlots();
         _remote = test.Count > 0 ? test : b != null ? _session.RemoteSlots() : new HashSet<string>();
         Write("battle_coop.txt", $"{_battle} {string.Join(",", _remote)}");
+        Delete("shuffle.txt");                                // the last battle's Shuffle Time pick
         _log.Info($"Battle {_battle} starts: " + (b == null ? "local" : b.Starter ? "we started it" : "joined the partner's") +
                   (_remote.Count > 0 ? $", partner commands {string.Join(",", _remote)}" : ""));
     }
@@ -325,7 +330,7 @@ public unsafe class BattleHooks
                 _floors?.Tick();
                 foreach (var m in _session.Receive())
                 {
-                    try { _encounter.OnMessage(m); _party.OnMessage(m); _floors?.OnMessage(m); } catch (Exception e) { _log.Error($"message '{string.Join(' ', m)}': {e.Message}"); }
+                    try { _encounter.OnMessage(m); _party.OnMessage(m); _floors?.OnMessage(m); _items.OnMessage(m); OnShuffle(m); } catch (Exception e) { _log.Error($"message '{string.Join(' ', m)}': {e.Message}"); }
                 }
                 // Joiner: our battle reached its first turn (Lua) -> tell the starter, who is waiting for it.
                 var ready = Path.Combine(_dir, "battle_ready.txt");
@@ -376,6 +381,15 @@ public unsafe class BattleHooks
             }
             catch { /* file busy: next round */ }
         }
+    }
+
+    // Shuffle Time (card choice after a battle): the host chooses. The host's Lua sends "SHUFFLECUR i" (cursor) and
+    // "SHUFFLEPICK i" (chosen card); the guest's Lua keeps its cursor on that card (shuffle.txt = "cur i" / "pick i").
+    private void OnShuffle(string[] f)
+    {
+        if (f.Length < 2 || _session.MyRole != Session.Role.Guest) return;
+        if (f[0] == "SHUFFLECUR") Write("shuffle.txt", "cur " + f[1]);
+        else if (f[0] == "SHUFFLEPICK") { Write("shuffle.txt", "pick " + f[1]); _log.Info($"Shuffle Time: host picked card {f[1]}"); }
     }
 
     private bool ManualOverride(nint am, nint commander, string slot)

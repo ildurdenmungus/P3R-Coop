@@ -435,3 +435,26 @@ Hook pattern: `IStartupScanner.AddMainModuleScan(sig)` → `IReloadedHooks.Creat
   same layout (fingerprint e525ae35). 24F = [91 seed 1284 20 0 2570 0 0]: hashing words 0+4 gave 23F/24F the same
   seed -> now words 0,2,3,4,5 (seeds 31272 / 15123 in the check run). Layout params are per-floor constants
   except word 1.
+
+### Second real session (2026-10-07 01:03-01:35, friend hosts, Thebel) + fixes
+- Joint battles 2/4/6 (host) and 3/5/7 (guest) all joined; floors shared (both games: 27641, 14843, 8101, 12222).
+  Floors with identical params ([91 x 1284 21 0 2570 0 0] three times) all got 8101 -> same layout; the floor
+  number is not in the param block (TODO: find it, e.g. a GlobalWork counter).
+- **Boss 806 (Thebel guardian, stage 203.201) was fought separately** (guest 01:23:52, host 01:24:10): it starts
+  with Encount -> Load* (no PreLoad), so the PreLoad announce never ran; the collision gate logged "waiting" but
+  the fight started anyway (the boss/model collision is not the trigger). Fixes: announce at the first load hook
+  of any battle; a battle starting while a partner join is pending adopts that battle (id/seed/param); the gate
+  also switches off FldHitActorBOX/FldHitActor/BP_DEVT_RefActor_C collision within 3000 of the boss (untested).
+- **Ghost:** steady ~195-215 units behind with 0 snaps -> AddMovementInput did not move the taken-over pawn (only
+  the >200 pull did). Now kinematic: movement component tick off, glide 35%/step to the predicted position, its
+  Velocity set for the walk animation, yaw = movement direction (or the partner's yaw when standing), smoothed.
+- **Looks reverted after battles** (game re-dresses pawns without touching IndexID): BattleRecon counts battle
+  ends (_G.P3RCOOP_BATTLE_ENDS), P3RCoop re-applies SetIndexID/SetCostume after each.
+- **Camera lag on the partner's turn:** Session.TestSlots() read remote_slots.txt from disk on every frame while
+  a remote turn was held (IsRemote in the world tick) -> cached for 1 s.
+- **Chest/pot loot (user):** `ItemSync.cs` - outside battles, every 0.5 s diff ItemBag (+0x24E8, 0x1D00 byte
+  counts) and Money (+0x4260) against a snapshot; increases -> "ITEMS idx:delta M:delta" -> partner adds them (and
+  into its snapshot, no echo). Re-snapshot 4 s after battles (drops are per game).
+- **Shuffle Time (user: only the host chooses):** ABtlShuffleMainBase SelectCoursorIndex +0x30C, SelectedCardNum
+  +0x340, ActionCardIndex +0x344. BattleRecon: host sends SHUFFLECUR/SHUFFLEPICK via lua_out.txt, guest's C# writes
+  shuffle.txt, guest's Lua puts its cursor on the host's card; all states logged ("SHUFFLE ..."). Untested.
