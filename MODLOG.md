@@ -472,3 +472,6 @@ Hook pattern: `IStartupScanner.AddMainModuleScan(sig)` → `IReloadedHooks.Creat
   BP_FLD_ItemBox_N_C. Chest/ItemSync test not finished (the game closed at 02:12:34, normal exit path c0000602,
   no UE crash report).
 - coop_role() in P3RCoop.lua is cached for 1 s (was a file read ~60x/s); FldEnemyManager search throttled to 2 s.
+- 02:12:34 game exit = the user closed it (not a crash). Shuffle Time in the real session: the guest manually
+  picked the same card as the host (worried a different pick would break things) - the new cursor-follow does
+  this automatically; a different pick would not crash, only give the games different rewards.
