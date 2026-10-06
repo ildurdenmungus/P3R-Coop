@@ -458,3 +458,17 @@ Hook pattern: `IStartupScanner.AddMainModuleScan(sig)` → `IReloadedHooks.Creat
 - **Shuffle Time (user: only the host chooses):** ABtlShuffleMainBase SelectCoursorIndex +0x30C, SelectedCardNum
   +0x340, ActionCardIndex +0x344. BattleRecon: host sends SHUFFLECUR/SHUFFLEPICK via lua_out.txt, guest's C# writes
   shuffle.txt, guest's Lua puts its cursor on the host's card; all states logged ("SHUFFLE ..."). Untested.
+- **Solo checks 02:00-02:12 (friend's save, Arqa 25F):** kinematic ghost while walking: avg 21-45 units, max ~260
+  (was ~200 steady), run animation plays (screenshot). Mirror partner battle: no join -> 30 s -> solo, worked.
+- **Mouse lock (user):** with RenderInBackground the game kept centering/confining the cursor while unfocused.
+  `MouseRelease.cs`: P3R.exe's user32 SetCursorPos/ClipCursor imports -> no-op / release while P3R is not the
+  foreground window. (Untested in game yet - built after the game closed.)
+- **Shadows (user: "enemies not synced on the map"):** host's Lua writes local_enemies.txt every 0.1 s
+  ("<floor id> id#n,x,y,z,yaw;..." - a Shadow group shares one spawn id, so #n numbers them); the link sends it as
+  UDP "E" -> guest's remote_enemies.txt; the guest takes its Shadow with the same key over (movement comp + AI
+  controller tick off) and glides it there. Verified one-PC via `mirror guest`: both actors of the id-1 group moved
+  to injected host positions/yaws.
+- Field objects on Arqa 25F: BP_DOBJ_TBoxNormal_C (chest), BP_DOBJ_Broken2_C/Broken3_C (breakables),
+  BP_FLD_ItemBox_N_C. Chest/ItemSync test not finished (the game closed at 02:12:34, normal exit path c0000602,
+  no UE crash report).
+- coop_role() in P3RCoop.lua is cached for 1 s (was a file read ~60x/s); FldEnemyManager search throttled to 2 s.

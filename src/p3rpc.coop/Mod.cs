@@ -21,6 +21,7 @@ public class Mod
         if (config.DungeonProbe && _rng != null) _dungeon = new DungeonProbe(hooks, log, _rng, config.ForceSeed);
         if (config.XorProbe) _xor = new XorProbe(hooks, log);
         if (config.BattleRng) BattleRng.Install(log);   // after RngProbe: chains to its stub if both are on
+        MouseRelease.Install(log);                       // background rendering must not keep the mouse locked
         if (config.BattleHooks)
         {
             var session = new Session(config.RunDir, log);

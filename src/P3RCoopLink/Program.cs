@@ -95,6 +95,26 @@ string? ReadLocal()
     catch { return null; }
 }
 
+// Shadows on the floor, host -> guest (UDP like the player position): local_enemies.txt -> peer's remote_enemies.txt
+var localEnemiesPath = Path.Combine(dir, "local_enemies.txt");
+var remoteEnemiesPath = Path.Combine(dir, "remote_enemies.txt");
+string? ReadLine(string path)
+{
+    try
+    {
+        using var fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+        using var sr = new StreamReader(fs);
+        var line = sr.ReadLine();
+        return string.IsNullOrWhiteSpace(line) ? null : line.Trim();
+    }
+    catch { return null; }
+}
+void WriteAtomic(string path, string line)
+{
+    var tmp = path + ".tmp";
+    try { File.WriteAllText(tmp, line + "\n"); File.Move(tmp, path, overwrite: true); } catch { }
+}
+
 void WriteRemote(string line)
 {
     // write-then-rename so the game never reads half a line
@@ -104,26 +124,30 @@ void WriteRemote(string line)
 
 switch (mode)
 {
-    case "mirror": await Mirror(); break;
+    case "mirror": await Mirror(Arg(0) ?? "host"); break;
     case "bot": await Bot(Arg(0) ?? "host"); break;
     case "fakeguest": await FakeGuest(Arg(0) ?? Path.Combine(home, "run")); break;
     case "host": await RunPeer(isHost: true, hostIp: null); break;
     case "join": await RunPeer(isHost: false, hostIp: Arg(0)); break;
     default:
-        Console.WriteLine("usage: P3RCoopLink host [--save N] | join [ip] [--slot N] | mirror | bot [host|guest] | fakeguest <hostRunDir>");
+        Console.WriteLine("usage: P3RCoopLink host [--save N] | join [ip] [--slot N] | mirror [host|guest] | bot [host|guest] | fakeguest <hostRunDir>");
         return;
 }
 
-async Task Mirror()
+async Task Mirror(string role)
 {
     Status("mirror mode: your own state comes back 0.25 s late, shifted 250 units");
     var history = new Queue<(long t, string line)>();
     var sw = Stopwatch.StartNew();
     var beat = Stopwatch.StartNew();
-    WritePeer("host", true);                            // so the game shows a ghost (party.txt, ghost choice)
+    WritePeer(role, true);                              // so the game shows a ghost (party.txt, ghost choice)
+    var enemies = new Queue<(long t, string line)>();
     while (true)
     {
-        if (beat.ElapsedMilliseconds > 1000) { WritePeer("host", true); beat.Restart(); }
+        if (beat.ElapsedMilliseconds > 1000) { WritePeer(role, true); beat.Restart(); }
+        // "mirror guest": our own Shadows come back 0.25 s late as if the host sent them (tests the guest side)
+        if (ReadLine(localEnemiesPath) is { } el) enemies.Enqueue((sw.ElapsedMilliseconds, el));
+        while (enemies.Count > 0 && sw.ElapsedMilliseconds - enemies.Peek().t > 250) WriteAtomic(remoteEnemiesPath, enemies.Dequeue().line);
         var line = ReadLocal();
         if (line != null) history.Enqueue((sw.ElapsedMilliseconds, line));
         while (history.Count > 0 && sw.ElapsedMilliseconds - history.Peek().t > 250)
@@ -430,6 +454,7 @@ async Task RunPeer(bool isHost, string? hostIp)
             if (lastHeard.Elapsed.TotalSeconds > 3 && !isHost) Status($"connected to host {r.RemoteEndPoint}");
             lastHeard.Restart();
             if (body.StartsWith("S ")) WriteRemote(body[2..]);
+            else if (body.StartsWith("E ")) WriteAtomic(remoteEnemiesPath, body[2..]);
         }
     });
 
@@ -444,6 +469,10 @@ async Task RunPeer(bool isHost, string? hostIp)
         if (peer != null)
         {
             var line = ReadLocal() ?? "idle";
+            if (isHost && ReadLine(localEnemiesPath) is { } en)
+            {
+                try { await udp.SendAsync(Encoding.UTF8.GetBytes($"{Magic}|E {en}"), peer); } catch { }
+            }
             var bytes = Encoding.UTF8.GetBytes($"{Magic}|S {line}");
             try { await udp.SendAsync(bytes, peer); } catch { }
             if (lastHeard.Elapsed.TotalSeconds > 3 && lastWarn.Elapsed.TotalSeconds > 5)

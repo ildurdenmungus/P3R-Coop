@@ -49,10 +49,13 @@ local function read_line(name)
 end
 
 -- "host" / "guest" while the link reports a partner, else nil
+local role_cache, role_at = nil, -10
 local function coop_role()
+    if os.clock() - role_at < 1 then return role_cache end   -- asked ~60x a second: read the file once a second
+    role_at = os.clock()
     local role, up = (read_line("peer.txt") or ""):match("^(%a+)%s+(%d)")
-    if up == "1" then return role end
-    return nil
+    role_cache = up == "1" and role or nil
+    return role_cache
 end
 
 -- character id of the guest's duo leader (party slot 2)
@@ -262,6 +265,90 @@ local function boss_gate()
     end
 end
 
+-- Shadows on the floor follow the host (user 2026-10-07: "enemies are not synced in map"). Host: every 0.1 s
+-- local_enemies.txt = "<floor id> id,x,y,z,yaw;..." (the link sends it like the player position). Guest: its Shadow
+-- with the same spawn id is taken over (AI + movement off) and glides to the host's position, like the ghost.
+local enemy_tick, enemy_line, enemy_targets, enemy_taken = 0, nil, {}, {}
+local enemy_search = 0
+local function enemy_list()
+    if not valid(enemy_mgr) then
+        if os.clock() < enemy_search then return {} end
+        enemy_search = os.clock() + 2                -- FindFirstOf scans every object: not every tick in the lobby
+        enemy_mgr = FindFirstOf("FldEnemyManager")
+    end
+    if not valid(enemy_mgr) then return {} end
+    local out, seen = {}, {}
+    for i = 1, #enemy_mgr.Enemies do
+        local h = enemy_mgr.Enemies[i]
+        local c, a = h.EnemyComp, h.Actor
+        if c and c:IsValid() and a and a:IsValid() then
+            seen[c.ID] = (seen[c.ID] or 0) + 1            -- a Shadow group shares one spawn id: number them
+            out[#out + 1] = { id = c.ID, key = c.ID .. "#" .. seen[c.ID], actor = a }
+        end
+    end
+    return out
+end
+
+local function send_enemies()
+    enemy_tick = enemy_tick + 1
+    if enemy_tick % 3 ~= 0 then return end
+    local parts = {}
+    for _, e in ipairs(enemy_list()) do
+        if not e.actor.bHidden then
+            local l, r = e.actor:K2_GetActorLocation(), e.actor:K2_GetActorRotation()
+            parts[#parts + 1] = string.format("%s,%.0f,%.0f,%.0f,%.0f", e.key, l.X, l.Y, l.Z, r.Yaw)
+        end
+    end
+    local f = io.open(RUN .. "local_enemies.txt", "w")
+    if f then f:write(string.format("%u %s\n", floor_id, table.concat(parts, ";"))); f:close() end
+end
+
+local function take_over_enemy(a)
+    pcall(function() a.CharacterMovement:SetComponentTickEnabled(false) end)
+    pcall(function()
+        local ctrl = a.Controller
+        if ctrl and ctrl:IsValid() then ctrl:StopMovement(); ctrl:SetActorTickEnabled(false) end
+    end)
+end
+
+local function follow_enemies()
+    local f = io.open(RUN .. "remote_enemies.txt", "r")
+    if f then
+        local line = f:read("*l"); f:close()
+        if line and line ~= enemy_line then
+            enemy_line = line
+            local fl, rest = line:match("^(%d+)%s*(.*)$")
+            enemy_targets = {}
+            if fl and tonumber(fl) == floor_id then
+                for key, x, y, z, yaw in rest:gmatch("(%-?%d+#%d+),(%-?%d+),(%-?%d+),(%-?%d+),(%-?%d+)") do
+                    enemy_targets[key] = { X = tonumber(x), Y = tonumber(y), Z = tonumber(z), Yaw = tonumber(yaw) }
+                end
+            end
+        end
+    end
+    if next(enemy_targets) == nil then return end
+    for _, e in ipairs(enemy_list()) do
+        local t = enemy_targets[e.key]
+        if t then
+            local a = e.actor
+            local key = a:GetFName():ToString()
+            if not enemy_taken[key] then enemy_taken[key] = true; take_over_enemy(a); log("shadow " .. e.id .. " follows the host") end
+            local cur = a:K2_GetActorLocation()
+            local dx, dy, dz = t.X - cur.X, t.Y - cur.Y, t.Z - cur.Z
+            if dx * dx + dy * dy > 1500 * 1500 then
+                a:K2_SetActorLocation({ X = t.X, Y = t.Y, Z = t.Z }, false, {}, true)
+            else
+                local k = 0.35
+                a:K2_SetActorLocation({ X = cur.X + dx * k, Y = cur.Y + dy * k, Z = cur.Z + dz * k }, false, {}, true)
+                pcall(function() a.CharacterMovement.Velocity = { X = dx * k * 30, Y = dy * k * 30, Z = 0 } end)
+            end
+            local r = a:K2_GetActorRotation()
+            local dyaw = (t.Yaw - r.Yaw + 540) % 360 - 180
+            a:K2_SetActorRotation({ Pitch = 0, Yaw = r.Yaw + dyaw * 0.3, Roll = 0 }, true)
+        end
+    end
+end
+
 local next_player_search = 0
 local function tick()
     check_join()
@@ -277,6 +364,10 @@ local function tick()
     local r = player:K2_GetActorRotation()
     seq = seq + 1
     write_local(string.format("%d %u %.0f %.0f %.0f %.0f", seq, floor_id, l.X, l.Y, l.Z, r.Yaw))
+    if coop_role() == "host" then
+        local ok, err = pcall(send_enemies)
+        if not ok then log("enemies error: " .. tostring(err)) end
+    end
 
     local line = read_remote()
     if not line or line == last_remote then remote_age = remote_age + 1; return end
@@ -403,6 +494,10 @@ LoopAsync(33, function()
     ExecuteInGameThread(function()
         local ok, err = pcall(steer)
         if not ok then log("steer error: " .. tostring(err)) end
+        if coop_role() == "guest" then
+            local ok2, err2 = pcall(follow_enemies)
+            if not ok2 then log("enemy follow error: " .. tostring(err2)) end
+        end
     end)
     return false
 end)
