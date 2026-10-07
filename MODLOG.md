@@ -475,3 +475,33 @@ Hook pattern: `IStartupScanner.AddMainModuleScan(sig)` → `IReloadedHooks.Creat
 - 02:12:34 game exit = the user closed it (not a crash). Shuffle Time in the real session: the guest manually
   picked the same card as the host (worried a different pick would break things) - the new cursor-follow does
   this automatically; a different pick would not crash, only give the games different rewards.
+
+### Session 3 (2026-10-07 23:16-23:27) + fixes, All-Out sync (2026-10-08)
+- **Chest/pot items DID sync in session 3** (ITEMS both ways, e.g. 3825:1, 3616:1, M:2310). What was missing was the
+  object: the other player could open the same chest again. Now ItemSync writes item_gain.txt on a local gain ->
+  P3RCoop.lua finds the nearest chest/breakable (600 u) and sends "OBJ class x y" (lua_out) -> partner's Lua hides
+  it + collision off. Verified one-PC by files: "opened BP_DOBJ_TBoxNormal_C at 1050 10390" sent, and the chest at
+  5180,6890 came back hidden=true col=false. (A chest I opened at 00:14 gave no bag/money change - cause unknown.)
+- **ItemSync at save load** sent the whole inventory (doubled both) -> gated: party loaded + field state 2/3 seen,
+  and >6 items or >30 total at once is not sent ("a load or a shop").
+- **HP/SP v2 (menu heals):** HPSET both ways for all 4 party members, quiet until 3 s settled in the field.
+- **Startup crash coreclr+0x2E4FF2** = reading field manager +0x280 at the title screen -> Mem.Readable/FieldState.
+- **Partner-turn camera:** recorded a bot battle (caps/cam1.mkv): while P2 was held the camera sat behind P2
+  facing the enemy, then the attack played normally - nothing wrong seen. SetCommandTargets (+0x1040820) already
+  copies the targets into the action manager's TargetsManager (+0xE8 -> UBtlTargetsManagerComponent::SetTargets
+  +0x1057090: Targets +0xC8, EffectTargets +0xD8). ABtlCamera (SetCameraTargets/MainCharacter = plain setters at
+  +0x220/+0x228, BP-only callers) is never spawned; the real one is BP_BtlCameraManagerComponent_C. BattleRecon now
+  logs "CAM main=.. | tm main=.. targets=.. cursor=.." on change (search throttled to 2 s - a per-poll FindFirstOf
+  was a hitch source).
+- **All-Out Attack (user: "if someone agrees to do the all-out attack everyone does it"):** the hold-up prompt is
+  Blueprint-driven and never reaches SetCommand/DoCommand (Go only set MC's AI to type 2 id 310; the next
+  DoCommand was the enemy's). BP calls three ABtlActor natives (exec-thunk-only callers):
+  StartHoldup +0xFE4800 (prompt opens), DoGeneralAttack +0xFDC210 (Go; called seconds after the press, after the
+  intro), CancelHoldup +0xFD8220. `AlloutSync.cs` hooks them; the first answer in either game is sent as
+  "ALLOUT b n go|cancel" (n = lockstep turn), the other game presses the same (allout_force.txt -> BattleRecon ->
+  `BP_BtlPhaseFighting_C.BtlInput:CallInputTrigKeyboard(2=OK / 4=CANCEL)`; native +0x104B3B0 maps key index ->
+  TrigRU/TrigOK/TrigRL/TrigCANCEL). FindFirstOf("BtlInputComponent") = the GUI core's one, which the prompt
+  ignores; the phase's (BP_BtlMainConductor_C.BtlInput) works. Verified: prompt for P0 at turn 4, injected
+  "ALLOUT 1002 4 go" -> pressed -> "All-Out 'go' as the partner chose", All-Out played. Local answer -> send path
+  not exercised yet (no second prompt in the test battle).
+- Kit rebuilt 2026-10-08 00:51 (commit fe8a6ac).
