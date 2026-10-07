@@ -144,6 +144,7 @@ local function floor_hash()
 end
 
 LoopAsync(2000, function()
+    if _G.P3RCOOP_IN_BATTLE then return false end   -- object scans cause camera hitches in battle
     ExecuteInGameThread(function()
         local ok, h, n = pcall(floor_hash)
         if not ok or not h then pending_hash = nil; return end

@@ -154,10 +154,62 @@ local function shuffle_sync()
     end
 end
 
+-- All-Out Attack prompt (C# AlloutSync): the partner answered it -> press the same button here.
+-- BtlInputComponent:CallInputTrigKeyboard(key) fires the battle input delegate that key would: 2 (RR) = TrigOK
+-- = "Go", 4 (RD) = TrigCANCEL (read from the native, P3R.exe+0x104B3B0: key index -> TrigRU/TrigOK/TrigRL/TrigCANCEL).
+-- It must be the fighting phase's input (BP_BtlMainConductor_C.BtlInput): FindFirstOf("BtlInputComponent") gives
+-- the GUI core's one, which the prompt ignores (2026-10-08).
+-- One press, 1 s after the file appears (the prompt may bind its input a moment after it opens). No retry: the game
+-- reports "Go" (DoGeneralAttack) only seconds later, after the intro, so a second OK would land in the All-Out.
+-- If the press came too early the player answers by hand. C# deletes the file once the game took an answer.
+local allout_seen, allout_pressed = nil, false
+local function battle_input()
+    local ph = FindFirstOf("BP_BtlPhaseFighting_C")
+    if valid(ph) and valid(ph.BtlInput) then return ph.BtlInput end
+    for _, i in ipairs(FindAllOf("BtlInputComponent") or {}) do
+        if valid(i) and i:GetFullName():find("MainConductor", 1, true) then return i end
+    end
+end
+local function allout_force()
+    local f = io.open(RUN .. "allout_force.txt", "r")
+    if not f then allout_seen, allout_pressed = nil, false; return end
+    local what = f:read("*l") or ""; f:close()
+    local now = os.clock()
+    if not allout_seen then allout_seen = now; return end
+    if allout_pressed or now - allout_seen < 1.0 then return end
+    allout_pressed = true
+    local input = battle_input()
+    if not valid(input) then log("  ALLOUT no battle input component"); return end
+    local key = what == "go" and 2 or 4
+    local ok, err = pcall(function() input:CallInputTrigKeyboard(key) end)
+    log(string.format("  ALLOUT pressed %s for the partner (key %d) %s", what, key, ok and "ok" or ("FAILED " .. tostring(err))))
+end
+
+-- Camera diagnostics (user 2026-10-08: on the partner's turn the camera "points at wrong thing"): who the battle
+-- camera manager frames and what the action's target manager holds, logged when it changes. (ABtlCamera is never
+-- spawned; the camera is BP_BtlCameraManagerComponent_C. Searched at most every 2 s: FindFirstOf scans every
+-- UObject, and a per-poll search made the camera hitch before.)
+local cam, last_cam, cam_next = nil, nil, 0
+local function camera_log()
+    if not valid(cam) then
+        if os.clock() < cam_next then return end
+        cam_next = os.clock() + 2
+        cam = FindFirstOf("BP_BtlCameraManagerComponent_C")
+        if not valid(cam) then return end
+    end
+    local tm = valid(am) and am.TargetsManager or nil
+    local s = string.format("cam main=%s anim=%s | tm main=%s targets=%s cursor=%s", name(cam.MainCharacter),
+        tostring(cam.IsCameraAnim), valid(tm) and name(tm.MainCharacter) or "-", valid(tm) and actors(tm.Targets) or "-",
+        valid(tm) and actors(tm.CursorTargets) or "-")
+    if s ~= last_cam then last_cam = s; log("  CAM " .. s) end
+end
+
 local function poll()
+    _G.P3RCOOP_IN_BATTLE = valid(core)               -- the field scripts pause their object scans meanwhile
     if not valid(core) then
         if last_turn then
             log("battle over / no core"); last_turn, last_ai, last_am = nil, nil, nil
+            cam, last_cam, cam_next = nil, nil, 0
             coop_done = nil
             _G.P3RCOOP_BATTLE_ENDS = (_G.P3RCOOP_BATTLE_ENDS or 0) + 1   -- P3RCoop.lua re-dresses the pawns
             shuffle, shuffle_seen = nil, nil
@@ -171,8 +223,17 @@ local function poll()
         if not valid(core) then return end
     end
     coop_battle_start()
-    local ok_s, err_s = pcall(shuffle_sync)
-    if not ok_s then log("  SHUFFLE error " .. tostring(err_s)) end
+    local ok_c, err_c = pcall(camera_log)
+    if not ok_c and last_cam ~= "error" then last_cam = "error"; log("  CAM error " .. tostring(err_c)) end
+    local ok_a, err_a = pcall(allout_force)
+    if not ok_a then log("  ALLOUT error " .. tostring(err_a)) end
+    -- Shuffle Time only comes after the result: no object scan for it during the fight (camera hitches).
+    local finished = false
+    pcall(function() finished = core.BattleResult ~= 0 end)
+    if finished or valid(shuffle) then
+        local ok_s, err_s = pcall(shuffle_sync)
+        if not ok_s then log("  SHUFFLE error " .. tostring(err_s)) end
+    end
     local cur = core.CurrentAction
     local turn = name(cur)
     if turn ~= last_turn then

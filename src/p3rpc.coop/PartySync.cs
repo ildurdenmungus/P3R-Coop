@@ -3,10 +3,11 @@ using System.Diagnostics;
 namespace p3rpc.coop;
 
 /// <summary>
-/// HP/SP of the duos outside battles. Each game owns its duo - host: party positions 0+1 (MC + first member),
-/// guest: 2+3 - and sends their HP/SP once a second while not in a battle ("HPSP id hp sp id hp sp"); the partner
-/// writes them into its UGlobalWork units. So joint battles start from the same values on both games; inside a
-/// battle the lockstep keeps them equal and each battle writes its results back on both games.
+/// HP/SP of the whole party outside battles, both ways. Healing from the camp menu (spells, items) can target any
+/// party member and costs the caster SP (user, 2026-10-07: "sync heal spells from the menu"), so each game watches
+/// all four: a value that changed here since the last agreed one is sent ("HPSET id hp sp ..."), received values
+/// are written and become the agreed ones (no echo). The host sends everyone once when the field is reached, so
+/// both games start equal. Inside battles the lockstep keeps them equal; afterwards both report the same results.
 ///
 /// UGlobalWork (p3rpc.nativetypes, Astrea-era layout = the Aug 2025 build): +0x1B0 FDatUnitWork[13] (0x2B4 each:
 /// ID +0x8, Status.Hp +0xC, Status.Sp +0x10), +0x24D4 ushort ActiveCharacters[10] = party order by character id
@@ -15,6 +16,7 @@ namespace p3rpc.coop;
 public unsafe class PartySync
 {
     private const long RvaGetGlobalWork = 0x122AC90;   // p3rpc.nativetypes GetUGlobalWork signature
+    private const long RvaGetFieldManager = 0x115A590;  // field state +0x280: 2/3 = walking in the field
     private const int Units = 0x1B0, UnitCount = 13, UnitSize = 0x2B4, UnitId = 0x8, UnitHp = 0xC, UnitSp = 0x10, Active = 0x24D4;
 
     private readonly CoopLog _log;
@@ -25,7 +27,11 @@ public unsafe class PartySync
     private long _lastTick, _lastSend;
     private string? _lastSent;
     private long _diagAt = -60000;
-    private volatile string[]? _pending;               // latest HPSP from the partner, applied on the game thread
+    private readonly System.Collections.Concurrent.ConcurrentQueue<string[]> _pending = new();   // HPSET from the partner
+    private readonly Dictionary<int, (int Hp, int Sp)> _known = new();   // last agreed HP/SP per character id
+    private bool _sentAll;                             // host: full party sent once
+    private long _fieldSince;                          // when we were first seen walking in the field (0 = not yet)
+    private delegate* unmanaged<nint> _getFieldManager;
     private volatile string? _pendingPersona;          // guest: the host's MC Persona block (hex), applied likewise
     private string? _lastPersona;
     private string? _lastOrder;
@@ -45,7 +51,7 @@ public unsafe class PartySync
 
     public void OnMessage(string[] f)
     {
-        if (f[0] == "HPSP") _pending = f;
+        if (f[0] == "HPSET") _pending.Enqueue(f);
         if (f[0] == "MCPERSONA" && f.Length > 1) _pendingPersona = f[1];
     }
 
@@ -55,19 +61,31 @@ public unsafe class PartySync
         var now = Environment.TickCount64;
         if (now - _lastTick < 1000) return;
         _lastTick = now;
-        if (!_session.Connected || _inBattle()) return;
+        if (!_session.Connected) { _sentAll = false; _fieldSince = 0; return; }   // a (re)connecting guest gets the full party again
+        if (_inBattle()) return;
         if (_gw == 0) _gw = _getGlobalWork();
         if (_gw == 0) return;
 
-        if (_pending is { } p)
+        bool partyLoaded = *(ushort*)(_gw + Active) != 0;
+        // A save load changes every value at once: say nothing until we have walked in the field for 3 s (the first
+        // test sent the whole party right as the save loaded - a stale copy would overwrite the host's values).
+        if (_fieldSince == 0)
         {
-            _pending = null;
+            if (_getFieldManager == null) _getFieldManager = (delegate* unmanaged<nint>)((long)Process.GetCurrentProcess().MainModule!.BaseAddress + RvaGetFieldManager);
+            if (partyLoaded && Mem.FieldState(_getFieldManager()) is 2 or 3) _fieldSince = now;
+        }
+        bool settled = _fieldSince != 0 && now - _fieldSince > 3000;
+        while (partyLoaded && _pending.TryDequeue(out var p))     // values wait while no save is loaded
+        {
             for (int i = 1; i + 2 < p.Length; i += 3)
             {
-                var unit = UnitById(int.Parse(p[i]));
+                var id = int.Parse(p[i]);
+                var unit = UnitById(id);
                 if (unit == 0) continue;
-                *(int*)(unit + UnitHp) = int.Parse(p[i + 1]);
-                *(int*)(unit + UnitSp) = int.Parse(p[i + 2]);
+                int hp = int.Parse(p[i + 1]), sp = int.Parse(p[i + 2]);
+                *(int*)(unit + UnitHp) = hp;
+                *(int*)(unit + UnitSp) = sp;
+                _known[id] = (hp, sp);
             }
         }
 
@@ -101,30 +119,34 @@ public unsafe class PartySync
             try { File.WriteAllText(Path.Combine(_runDir, "party.txt"), order); } catch { }
         }
 
-        var own = _session.MyRole == Session.Role.Guest ? new[] { 2, 3 } : new[] { 0, 1 };
-        var msg = "HPSP";
-        foreach (var pos in own)
+        // Whatever changed here (menu heals, SP spent on them, items) goes to the partner.
+        var msg = "HPSET";
+        for (int pos = 0; pos < 4; pos++)
         {
             int id = *(ushort*)(_gw + Active + pos * 2);
             var unit = UnitById(id);
-            if (unit != 0) msg += $" {id} {*(int*)(unit + UnitHp)} {*(int*)(unit + UnitSp)}";
+            if (unit == 0) continue;
+            var cur = (*(int*)(unit + UnitHp), *(int*)(unit + UnitSp));
+            if (!settled) { _known[id] = cur; continue; }   // loading: just remember
+            bool first = !_known.ContainsKey(id);
+            if (first) _known[id] = cur;
+            if ((_session.MyRole == Session.Role.Host && !_sentAll) || (!first && _known[id] != cur))
+            {
+                _known[id] = cur;
+                msg += $" {id} {cur.Item1} {cur.Item2}";
+            }
         }
-        if (msg == "HPSP" && now - _diagAt > 60000)
+        if (_session.MyRole == Session.Role.Host && settled) _sentAll = true;
+        if (msg == "HPSET" && now - _diagAt > 60000 && *(ushort*)(_gw + Active) == 0)
         {
-            // Layout check: nothing found (no save loaded yet, or the layout moved) -> dump what we read.
+            // Layout check: no party found (no save loaded yet, or the layout moved) -> dump what we read.
             _diagAt = now;
             var act = string.Join(",", Enumerable.Range(0, 10).Select(i => *(ushort*)(_gw + Active + i * 2)));
-            var units = string.Join(" | ", Enumerable.Range(0, UnitCount).Select(i =>
-            {
-                var u = _gw + Units + i * UnitSize;
-                return $"{*(uint*)u:X} {*(ushort*)(u + 4)} {*(uint*)(u + 8)} hp{*(int*)(u + UnitHp)} sp{*(int*)(u + UnitSp)}";
-            }));
-            _log.Info($"PartySync: GlobalWork 0x{_gw:X}, active [{act}], units: {units}");
+            _log.Info($"PartySync: GlobalWork 0x{_gw:X}, no party yet (active [{act}])");
         }
-        if (msg == _lastSent && now - _lastSend < 5000) return;
-        _lastSent = msg;
-        _lastSend = now;
+        if (msg == "HPSET") return;
         _session.Send(msg, quiet: true);
+        _log.Quiet("HP/SP changed here: " + msg);
     }
 
     private nint UnitById(int id)

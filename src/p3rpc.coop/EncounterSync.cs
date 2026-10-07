@@ -394,7 +394,7 @@ public unsafe class EncounterSync
         if (now - j.LastTry < 1000) return;
         var mgr = _getFieldManager();
         if (mgr == 0) return;
-        var state = *(int*)(mgr + MgrState);
+        var state = Mem.FieldState(mgr);
         if (state != 2 && state != 3) return;                    // menu, event, loading...: try again later
         j.LastTry = now;
         try { File.WriteAllText(Path.Combine(_dir, "join_go.txt"), j.Id.ToString()); } catch { }

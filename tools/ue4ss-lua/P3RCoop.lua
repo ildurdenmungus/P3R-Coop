@@ -17,6 +17,7 @@ _G.P3RCOOP_GEN = (_G.P3RCOOP_GEN or 0) + 1
 local GEN = _G.P3RCOOP_GEN
 local seq, floor_id = 0, 0
 local player, ghost = nil, nil
+local swap_partner = nil      -- guest: the partner pawn that wears the MC's look (shows the host)
 local last_remote, remote_age = nil, 999
 local target = nil            -- latest network position of the other player {X,Y,Z,Yaw}
 local target_time = 0         -- os.time() of the last update (only set while both are on the same floor)
@@ -82,7 +83,7 @@ end
 -- The partner pawn that shows the other player (see the header).
 local function find_ghost()
     local role = coop_role()
-    if role == "guest" then return partner_with(MC) end
+    if role == "guest" then return (valid(swap_partner) and swap_partner) or partner_with(MC) end
     local leader = guest_leader()
     if leader then return partner_with(leader) end
     return nil
@@ -95,42 +96,46 @@ local dressed_at = -1                     -- battle count (BattleRecon) when the
 local function set_look(c, id, costume)
     c:SetIndexID(id); c:SetCostumeID(costume); c:SetCostume()
 end
+local redress_until, recheck_at = 0, 0
+-- The model a pawn really wears (body mesh SK_PC0003_... = character 3). The game re-dresses pawns after battles
+-- and on new floors without touching IndexID, so the ids alone can't tell (2026-10-07 session).
+local function wears(c, id)
+    local ok, m = pcall(function() return c.CostumeMesh.SkeletalMesh:GetFName():ToString() end)
+    if not ok or not m then return true end                -- can't tell: leave it
+    return m:find(string.format("PC%04d", id), 1, true) ~= nil
+end
 local function update_looks()
     if not valid(player) then return end
     local pc = char_comp(player)
     if not pc then return end
     local leader = guest_leader()
     local want = coop_role() == "guest" and leader ~= nil
-    -- After a battle the game re-dresses the field pawns from the party data without changing IndexID (2026-10-07:
-    -- "after one battle the guest looked like the host"): apply the looks again after every battle.
     local battles = _G.P3RCOOP_BATTLE_ENDS or 0
-    if want and swapped and pc.IndexID ~= MC and dressed_at ~= battles then
-        local other = partner_with(MC) or partner_with(leader)
-        set_look(pc, leader, 0)
-        if other and char_comp(other) then set_look(char_comp(other), MC, -1) end
-        dressed_at = battles
-        ghost = nil
-        log("looks applied again after a battle")
-        return
-    end
-    if want and pc.IndexID == MC then
-        local other = partner_with(leader)
-        local oc = other and char_comp(other)
-        if not oc then return end
-        local my_costume, other_costume = pc.CostumeID, oc.CostumeID
-        set_look(pc, leader, other_costume)
-        set_look(oc, MC, my_costume)
-        swapped = true
-        dressed_at = _G.P3RCOOP_BATTLE_ENDS or 0
-        ghost = nil                                   -- pick the (now MC-looking) ghost again
-        log(string.format("looks swapped: we are character %d, the host is shown on %s", leader, other:GetFName():ToString()))
-    elseif not want and swapped and pc.IndexID ~= MC then
-        local other = partner_with(MC)
-        local oc = other and char_comp(other)
-        local leader_id = pc.IndexID
-        set_look(pc, MC, oc and oc.CostumeID or -1)
-        if oc then set_look(oc, leader_id, 0) end
-        swapped = false
+    if want then
+        -- Remember the swapped pawn itself: after a battle the game re-dresses our pawn as the MC while the partner
+        -- pawn keeps IndexID 1, so looking it up by the leader's id found nothing (2026-10-07 session).
+        if not valid(swap_partner) then swap_partner = partner_with(leader) or partner_with(MC) end
+        local sc = valid(swap_partner) and char_comp(swap_partner)
+        if not sc then return end
+        if dressed_at ~= battles then dressed_at = battles; redress_until = os.time() + 6 end
+        local again = os.time() <= redress_until      -- re-dress a few times after a battle (the game may do it late)
+        local stale = os.time() >= recheck_at and (not wears(pc, leader) or not wears(sc, MC))
+        if pc.IndexID ~= leader or sc.IndexID ~= MC or again or stale then
+            recheck_at = os.time() + 6                  -- the new meshes load asynchronously
+            set_look(pc, leader, 0)
+            set_look(sc, MC, -1)
+            if not swapped then
+                log(string.format("looks swapped: we are character %d, the host is shown on %s", leader, swap_partner:GetFName():ToString()))
+            elseif not again then
+                log("looks applied again" .. (stale and " (the game had re-dressed the pawns)" or ""))
+            end
+            swapped = true
+            ghost = nil                               -- steer() takes it over again (find_ghost -> swap_partner)
+        end
+    elseif swapped then
+        set_look(pc, MC, -1)
+        if valid(swap_partner) and char_comp(swap_partner) then set_look(char_comp(swap_partner), leader or 2, 0) end
+        swapped, swap_partner = false, nil
         log("looks restored")
     end
 end
@@ -349,9 +354,62 @@ local function follow_enemies()
     end
 end
 
+-- Chests and breakables (user 2026-10-07: "if someone opens it the other can't, but everybody gets the item";
+-- same for breakable loot). The C# ItemSync writes item_gain.txt when our inventory goes up outside a battle: the
+-- chest/breakable we stand at is the source -> "OBJ class x y" to the partner, whose game hides it and switches its
+-- collision off (it can't be opened/broken there). The items themselves come through ItemSync ("ITEMS").
+local OBJ_CLASSES = { "BP_DOBJ_TBoxNormal_C", "BP_DOBJ_TBoxRare_C", "BP_DOBJ_TBox_C", "BP_DOBJ_Broken1_C",
+                      "BP_DOBJ_Broken2_C", "BP_DOBJ_Broken3_C", "BP_DOBJ_Broken4_C" }
+local function lua_send(line)
+    local f = io.open(RUN .. "lua_out.txt", "a")
+    if f then f:write(line .. "\n"); f:close() end
+end
+local function nearest_object(x, y, radius)
+    local best, best_cls, best_d = nil, nil, radius * radius
+    for _, cls in ipairs(OBJ_CLASSES) do
+        for _, o in ipairs(FindAllOf(cls) or {}) do
+            if valid(o) then
+                local l = o:K2_GetActorLocation()
+                local d = (l.X - x) ^ 2 + (l.Y - y) ^ 2
+                if d < best_d then best, best_cls, best_d = o, cls, d end
+            end
+        end
+    end
+    return best, best_cls
+end
+local function sync_objects()
+    local f = io.open(RUN .. "item_gain.txt", "r")
+    if f then
+        f:close(); os.remove(RUN .. "item_gain.txt")
+        if valid(player) then
+            local pl = player:K2_GetActorLocation()
+            local o, cls = nearest_object(pl.X, pl.Y, 600)
+            if o then
+                local l = o:K2_GetActorLocation()
+                lua_send(string.format("OBJ %s %.0f %.0f", cls, l.X, l.Y))
+                log(string.format("opened %s at %.0f %.0f: gone for the partner too", cls, l.X, l.Y))
+            end
+        end
+    end
+    local r = io.open(RUN .. "obj_remove.txt", "r")
+    if r then
+        local text = r:read("*a") or ""; r:close(); os.remove(RUN .. "obj_remove.txt")
+        for cls, x, y in text:gmatch("(%S+) (%-?%d+) (%-?%d+)") do
+            local o = nearest_object(tonumber(x), tonumber(y), 150)
+            if o then
+                pcall(function() o:SetActorEnableCollision(false) end)
+                pcall(function() o:SetActorHiddenInGame(true) end)
+                log(string.format("partner opened %s at %s %s: removed here", cls, x, y))
+            end
+        end
+    end
+end
+
 local next_player_search = 0
 local function tick()
     check_join()
+    local ok_o, err_o = pcall(sync_objects)
+    if not ok_o then log("objects error: " .. tostring(err_o)) end
     if not valid(player) then
         -- FindAllOf scans every UObject: only retry every 2 s (the field pawn is hidden during battles)
         if os.clock() < next_player_search then return end
@@ -482,6 +540,7 @@ end
 
 LoopAsync(TICK_MS, function()
     if _G.P3RCOOP_GEN ~= GEN then return true end
+    if _G.P3RCOOP_IN_BATTLE then return false end   -- field work pauses during battles (hitches)
     ExecuteInGameThread(function()
         local ok, err = pcall(tick)
         if not ok then log("tick error: " .. tostring(err)) end
@@ -491,6 +550,7 @@ end)
 
 LoopAsync(33, function()
     if _G.P3RCOOP_GEN ~= GEN then return true end
+    if _G.P3RCOOP_IN_BATTLE then return false end   -- field work pauses during battles (hitches)
     ExecuteInGameThread(function()
         local ok, err = pcall(steer)
         if not ok then log("steer error: " .. tostring(err)) end
@@ -504,6 +564,7 @@ end)
 
 LoopAsync(500, function()
     if _G.P3RCOOP_GEN ~= GEN then return true end
+    if _G.P3RCOOP_IN_BATTLE then return false end   -- field work pauses during battles (hitches)
     ExecuteInGameThread(function()
         local ok, err = pcall(boss_gate)
         if not ok then log("boss gate error: " .. tostring(err)) end
@@ -513,6 +574,7 @@ end)
 
 LoopAsync(2000, function()
     if _G.P3RCOOP_GEN ~= GEN then return true end
+    if _G.P3RCOOP_IN_BATTLE then return false end   -- field work pauses during battles (hitches)
     ExecuteInGameThread(function()
         local ok, id = pcall(compute_floor_id)
         if ok and id ~= floor_id then floor_id = id; log(string.format("floor id %u", id)) end

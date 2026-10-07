@@ -111,6 +111,9 @@ public unsafe class BattleHooks
     // Starter of a joint battle: the first action waits until the partner's battle is at its first turn too (the
     // joiner loads seconds later; without this every later turn of theirs arrives that much late).
     private nint _startHeldAm;
+    // Camera-lag diagnostics for held partner turns (user: "camera is laggy when it's not my turn")
+    private int _heldFrames, _heldRecalls;
+    private float _heldMaxDt;
     private bool _startGateDone;
     private const long StartWaitMs = 30000;
     private int _localBattles;
@@ -118,6 +121,7 @@ public unsafe class BattleHooks
 
     private readonly FloorSync? _floors;
     private readonly ItemSync _items;
+    private readonly AlloutSync _allout;
 
     public BattleHooks(IReloadedHooks hooks, CoopLog log, string runDir, Session session, EncounterSync encounter, uint battleRngTestSeed = 0, bool syncFloors = true)
     {
@@ -127,7 +131,7 @@ public unsafe class BattleHooks
         _encounter = encounter;
         _party = new PartySync(log, session, runDir, () => _inBattle);
         _floors = syncFloors ? new FloorSync(hooks, log, session) : null;
-        _items = new ItemSync(log, session, () => _inBattle);
+        _items = new ItemSync(log, session, runDir, () => _inBattle);
         _testSeed = battleRngTestSeed;
         if (_testSeed != 0) BattleRng.Arm(_testSeed);   // one-PC test: every battle uses this seed
         Directory.CreateDirectory(runDir);
@@ -143,8 +147,10 @@ public unsafe class BattleHooks
         _setCommandTargets = Marshal.GetDelegateForFunctionPointer<SetCommandTargetsNative>((nint)(exe + RvaSetCommandTargets));
         _resizeForCopy = Marshal.GetDelegateForFunctionPointer<ResizeForCopyNative>((nint)(exe + RvaResizeForCopy));
         _setPersonaEquip = (delegate* unmanaged<ushort, short, byte>)(exe + RvaSetPersonaEquip);
+        _allout = new AlloutSync(hooks, log, session, runDir, () => _battle, () => _turn,
+            () => _remote.Any(r => IsRemote(r)), Slot);
         new Thread(WatchRemote) { IsBackground = true, Name = "coop-battle-remote" }.Start();
-        log.Info("Battle hooks on (SetCommand, DoCommand, world-tick release, remote relay)");
+        log.Info("Battle hooks on (SetCommand, DoCommand, world-tick release, remote relay, All-Out prompt)");
     }
 
     // Release point for held remote turns: the start of UWorld::Tick, once per frame on the game thread, before
@@ -173,13 +179,17 @@ public unsafe class BattleHooks
             }
             if (_waiting is { } w && _heldAm != 0)
             {
+                _heldFrames++;
+                if (deltaSeconds > _heldMaxDt) _heldMaxDt = deltaSeconds;
                 bool arrived = _received.ContainsKey((w.Battle, w.Turn));
                 bool alone = !arrived && !IsRemote(w.Slot);       // partner could not join / link lost: play it here
                 if (arrived || alone)
                 {
                     var am = _heldAm;
                     _heldAm = 0;
-                    _log.Info($"Battle {w.Battle} turn {w.Turn}: releasing {w.Slot} at world tick" + (alone ? " (partner gone: local command)" : ""));
+                    _log.Info($"Battle {w.Battle} turn {w.Turn}: releasing {w.Slot} at world tick" + (alone ? " (partner gone: local command)" : "") +
+                              $" - held {_heldFrames} frames, slowest {_heldMaxDt * 1000:F0} ms, game re-called DoCommand {_heldRecalls}x");
+                    _heldFrames = 0; _heldRecalls = 0; _heldMaxDt = 0;
                     DoCommandImpl(am);
                 }
             }
@@ -306,6 +316,7 @@ public unsafe class BattleHooks
             return true;
         }
 
+        if (resumed) _heldRecalls++;
         if (!resumed)
         {
             _waiting = (_battle, _turn, slot);
@@ -330,7 +341,7 @@ public unsafe class BattleHooks
                 _floors?.Tick();
                 foreach (var m in _session.Receive())
                 {
-                    try { _encounter.OnMessage(m); _party.OnMessage(m); _floors?.OnMessage(m); _items.OnMessage(m); OnShuffle(m); } catch (Exception e) { _log.Error($"message '{string.Join(' ', m)}': {e.Message}"); }
+                    try { _encounter.OnMessage(m); _party.OnMessage(m); _floors?.OnMessage(m); _items.OnMessage(m); _allout.OnMessage(m); OnShuffle(m); } catch (Exception e) { _log.Error($"message '{string.Join(' ', m)}': {e.Message}"); }
                 }
                 // Joiner: our battle reached its first turn (Lua) -> tell the starter, who is waiting for it.
                 var ready = Path.Combine(_dir, "battle_ready.txt");

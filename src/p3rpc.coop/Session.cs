@@ -64,7 +64,8 @@ public class Session
     public void Send(string line, bool quiet = false)
     {
         try { File.AppendAllText(Path.Combine(_dir, "net_out.txt"), line + Environment.NewLine); } catch { }
-        if (quiet) _log.Quiet("net -> " + line); else _log.Info("net -> " + line);
+        var shown = line.Length > 120 ? line[..120] + $"... ({line.Length} chars)" : line;   // MCPERSONA is ~1 KB of hex
+        if (quiet) _log.Quiet("net -> " + shown); else _log.Info("net -> " + shown);
     }
 
     /// <summary>New messages from the partner since the last call (watcher thread).</summary>
@@ -88,7 +89,7 @@ public class Session
             {
                 var f = line.Trim().Split(' ', StringSplitOptions.RemoveEmptyEntries);
                 if (f.Length == 0) continue;
-                if (f[0] is "HPSP" or "MCPERSONA" or "FLOORSEED" or "SHUFFLECUR") _log.Quiet("net <- " + line.Trim()); else _log.Info("net <- " + line.Trim());
+                if (f[0] is "HPSET" or "MCPERSONA" or "FLOORSEED" or "SHUFFLECUR") _log.Quiet("net <- " + (line.Length > 120 ? line[..120] + "..." : line.Trim())); else _log.Info("net <- " + line.Trim());
                 list.Add(f);
             }
         }
